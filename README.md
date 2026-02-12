@@ -42,19 +42,18 @@ Clean, professional design
 
 
 你现在的plan：
-✅ Step 1: 在另一个对话框整理project showcase
+✅ Step 1: 整理project showcase
 
 把training pipeline和results整合
 做成简洁的presentation (PDF slides推荐)
 
-✅ Step 2: 整理完发给这里的Claude看
+✅ Step 2: 整理完给Claude看
 
-我帮你review，看看是否clear和professional
+是否clear和professional
 
-✅ Step 3: 然后给我那两个职位的详细信息
+✅ Step 3: 职位的详细信息
 
-我帮你分析职位requirements
-我们一起看你的匹配度
+分析职位requirements,一起看你的匹配度
 
 ✅ Step 4: 根据职位信息，准备CV和Cover Letter
 
