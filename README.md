@@ -23,10 +23,9 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 
 ![Model Architecture](docs/architecture.png)
 
-results/perclass_heatmap_example.png
+<a href="results/perclass_heatmappng
   results/perclass_heatmap_example.png
 </a>
-
 
 ## Results
 
