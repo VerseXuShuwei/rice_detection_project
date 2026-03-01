@@ -1,0 +1,400 @@
+# ============================================================
+# Top-K Asymmetric MIL Training Configuration
+# ============================================================
+# Updated: 2025-12-04
+# Strategy: Negative tiles from pool, Positive tiles from Top-K selection
+# Training Unit: Tile-level (not bag-level)
+# Loss: TopK Anchored MIL Loss with phase-aware strategy
+# LR Schedule: Linear Warmup (Epoch 1-5) + Cosine Decay (Epoch 6-30)
+# Anti-NaN: Logits clipping + Gradient clipping + Conservative LR
+# ============================================================
+
+training_strategy:
+  name: "MIL_topk_asymmetric"
+  seed: 42
+  description: "Asymmetric MIL - Scout-Snipe two-pass strategy with negative tile pool"
+
+# ============================================================
+# Dataset Configuration
+# ============================================================
+dataset:
+  name: total_rice_image
+  root: data/total_rice_image
+
+  negative_class_name: "rice-healthy"  # Negative class (Class 0)
+  min_samples: 50  # Filter out long-tail classes
+
+  final_tile_size: 384  # Final tile size after resize
+
+  # Train/Val split ratio
+  train_ratio: 0.8
+  val_ratio: 0.2
+
+  # Tile generation config (NEW: Curriculum Learning)
+  tile_config:
+    # NEW (2025-12-25): Curriculum Learning - Warmup uses single scale
+    warmup_tile_size: 1024    # Warmup phase: Single-scale 1024→384 (clear texture)
+    warmup_overlap: 48
+
+    # NEW (2025-12-26): Adaptive Multi-scale based on image size
+    multiscale_min_size: [3000, 4000]  # [H, W] 多尺度启用阈值（只有大图才用多尺度）
+
+    # Large images (>= multiscale_min_size): Multi-scale tiles
+    scales: [ 1024, 1536, 2048 ] # Stable: 标准(1024) -> 广角(1536) -> 超广角(2048，大病斑）
+    overlaps: [ 48, 64, 96 ]  # 对应每个尺度的重叠像素
+
+    # Small images (< multiscale_min_size): Single-scale tiles
+    single_scale_tile_size: 768  # 小图单尺度tile大小（768→384，避免浪费）
+    single_scale_overlap: 48     # 小图overlap
+
+    # Rationale:
+    #   - Warmup (Epoch 1-8): 统一1024（学习清晰纹理特征）
+    #   - Stable (Epoch 9+): 自适应
+    #     - 大图 (>= 3000x4000): 多尺度 [1024, 1536, 2048]（捕捉大病斑）
+    #     - 小图 (< 3000x4000): 单尺度 768（避免过度切分）
+
+    max_tiles_per_bag: 60     # 限制每个Bag的最大Tile数量 (Scout Pool Strategy)
+    min_image_size: 1024
+
+
+  # RAM caching (disabled for memory optimization)
+  ram_cache:
+    enable: false
+    max_images: 32
+
+  # DataLoader optimization
+  num_workers: 6
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+
+# ============================================================
+# Negative Tile Pool Configuration
+# ============================================================
+negative_pool:
+  enable: true
+  lmdb_path: "data/negative_pool.lmdb"
+  tile_size: 768
+  overlap: 64
+  rebuild: false
+  max_pool_size: 200000
+  batch_size: 50
+  train_ratio: 0.8
+
+  # NEW (2025-12-25): Mosaic Augmentation for multi-scale training
+  mosaic:
+    enable: true              # Enable mosaic augmentation (全阶段可配置)
+    warmup_ratio: 0.8         # Warmup phase mosaic ratio (0.0-1.0, 可配置)
+    stable_ratio: 0.8         # Stable phase mosaic ratio (0.0-1.0, 可配置)
+    target_size: 384          # Final tile size after mosaic resize
+    # Rationale:
+    #   - 全阶段可配置：warmup_ratio和stable_ratio独立控制
+    #   - 建议Warmup: 0.0-0.3（先学清晰纹理，避免混淆）
+    #   - 建议Stable: 0.3-0.5（模拟多尺度缩放后的模糊背景，防止误判）
+    #   - Strategy: 4张tiles拼成2x2 grid → Resize to 384（降低分辨率）
+
+# ============================================================
+# Asymmetric MIL Training Strategy
+# ============================================================
+asymmetric_mil:
+  # Warm-up phase (fault-tolerant learning)
+  # Sampling: 7 bags × 4 K = 28 positive + 4 negative = 32 tiles (7:1 ratio)
+  warmup_epochs: 8           # MIL warm-up duration (independent of LR warmup)
+  warmup_bags_per_batch: 7    # 7 different disease classes, 63% class coverage
+  warmup_k: 4                 # 4 top-K tiles per bag
+  warmup_neg_tiles: 4         # 4 negative tiles per batch (configurable, fills GPU to 32 total)
+
+  # Stable phase (fine discrimination)
+  # Sampling: 11 bags × 2 K = 22 positive + 10 negative = 32 tiles (2.2:1 ratio)
+  stable_bags_per_batch: 11   # 11 different disease classes, 100% class coverage
+  stable_k: 2                 # 2 top-K tiles per bag
+  stable_neg_tiles: 10        # 10 negative tiles per batch (configurable, fills GPU to 32 total)
+
+  # Scout phase parameters
+  scout_batch_size: 32
+
+  # Augmentation consistency (CRITICAL: must be true)
+  cache_augmented_tiles: true
+
+  # Hard Negative Mining (NEW 2025-12-10)
+  # Prioritizes recall-failed tiles to enhance Ranking Loss effectiveness
+  # Rationale: Hard negatives increase max_neg_prob → stronger gradient signal for Top-1
+  hard_negative_mining:
+    enable: true
+    warmup_hard_ratio: 0.25   # Warmup: 25% hard negatives + 75% random
+    stable_hard_ratio: 0.25   # Stable: 25% hard negatives + 75% random
+    # Strategy: Hard negatives = tiles predicted as disease (recall failed)
+    # Effect: Forces Top-1 to be more confident (pos_conf > max_neg + margin)
+
+    # Blacklist Mechanism (NEW 2025-12-11)
+    # Tiles that fail recall >= max_failures times are permanently excluded from sampling
+    # Rationale: Likely annotation errors or true confusions that pollute training
+    max_failures_before_blacklist: 6  # Cumulative failures (non-consecutive)
+
+    # Life Decay Mechanism (NEW 2025-12-11)
+    # Prevents "zombie" hard negatives that never get sampled for verification
+    # Life points decay each epoch; tiles drop out when life reaches 0
+    initial_life_points: 5  # Starting life for new hard negatives (epochs until auto-removal)
+
+  # Warm-up termination criteria (6 P0 criteria, ALL must pass)
+  # NEW (2025-12-10): Added per-class analysis to prevent某类别死亡but平均值通过
+  warmup_criteria:
+    # Background Suppression
+    neg_recall_threshold: 0.70        # Model recognizes backgrounds
+    neg_confidence_threshold: 0.30    # Model doesn't hallucinate diseases on backgrounds
+
+    # Top-K Quality (Global Metrics)
+    topk_lift_threshold: 0.20         # Top-K selection is not random
+
+    # NEW (2025-12-10): Per-Class Quality (prevents困难类别完全崩溃)(P1 criteria)
+    top1_confidence_threshold: 0.50   # Top-1 tile confidence on true class (global avg)
+    class_coverage_threshold: 0.8     # At least 80% classes达标 (allows 20% difficult classes)
+    min_class_conf_threshold: 0.3     # Worst class confidence >= 0.3 (兜底保护)
+    qualified_class_conf: 0.5         # Single class "达标" standard (used in coverage calculation)
+
+    # Reference (not used for warmup termination)
+    topk_avg_confidence_threshold: 0.60 # Average confidence of Top-K tiles
+# ============================================================
+# Data Augmentation Configuration
+# ============================================================
+use_albumentations: true      #未使用,只在旧版本dataset.py和trainer.py中使用,当前: train_topk_asymmetric.py直接调用get_augmentation_from_config()，不检查此开关
+
+augmentation:
+  geometric:
+    enable_crop: true
+    crop_scale: [0.85, 1.0]
+    enable_hflip: true
+    hflip_prob: 0.5
+    enable_vflip: true
+    vflip_prob: 0.3
+    enable_rotate: true
+    rotate_limit: 15
+    rotate_prob: 0.5
+
+  color:
+    enable: true
+    prob: 0.7
+    brightness_limit: 0.2
+    contrast_limit: 0.2
+    hue_shift_limit: 10
+    sat_shift_limit: 20
+    val_shift_limit: 20
+
+  noise:
+    enable: true
+    prob: 0.3
+    var_limit: [5, 15]
+
+  random_erasing:
+    enabled: true
+    prob: 0.3
+    area_range: [0.02, 0.15]
+    aspect_ratio: [0.3, 3.3]
+
+# ============================================================
+# Model Configuration
+# ============================================================
+model:
+  name: "mil_efficientnetv2-s"
+  pretrained: true
+  dropout: 0.2
+  img_size: 384
+  freeze_stages: [0, 1, 2]  # Freeze early stages for transfer learning
+
+# ============================================================
+# MIL Head Configuration
+# ============================================================
+mil:
+  type: "tile_classifier"
+  num_classes: auto  # Auto-detect from dataset (will +1 for Class 0)
+  aggregation: "none"
+  include_negative_class: true
+
+# ============================================================
+# Loss Function Configuration
+# ============================================================
+# Top-K Anchored MIL Loss with Dynamic Weighting and Ranking Constraint
+# Warmup: Top-1 CE anchor + Top-2~K NR (tolerates noise)
+# Stable: Top-1 CE anchor + Top-2~K KL Distill (stricter gate) + Inter-bag Ranking
+# NEW (2025-12-10): Dynamic weight + Ranking loss + Stricter gate
+loss:
+  type: "topk_anchored_mil"
+
+  # Base configuration
+  top1_ce_weight: 5.0       # λ1: Top-1 CE weight (base, will be scaled by dynamic_weight)
+  top2k_nr_weight: 0.3     # λ2: Top-2~K NR weight (Warmup phase)
+  top2k_soft_weight: 0.3    # λ3: Top-2~K Soft Bootstrap weight (Stable phase)
+  stable_nr_weight: 0.3     # Stable 阶段tier2 Top-2~K 的 NR 权重
+  noise_drop_threshold: 0.4  # Tier 3噪声熔断阈值：如果 (预测 - 标注) > 0.5，判定为标注错误，Loss=0
+
+  alpha: 0.95               # Initial alpha for progressive soft bootstrap
+  epsilon: 1.0e-8           # Numerical stability constant
+
+  # NEW: Dynamic weighting (adaptive to Top-K reliability)
+  dynamic_weight:
+    enable: true                # Enable dynamic Top-1 CE weight
+    warmup_weight: 1.0          # Warmup: 0.1 (weak, avoids gradient destruction)
+    stable_weight: 2.0          # Stable: 1.0 (full strength)
+    growth_epochs: 8           # Linear growth over 10 epochs in stable phase
+    # Rationale: Initial Top-K selection unreliable -> weak supervision
+    #           As training progresses -> gradual increase
+
+#
+#
+  # NEW: Ranking constraint (prevents model collapse)
+  ranking:
+    enable: true                # Enable inter-bag ranking loss
+    inter_weight: 2           # Weight for ranking loss
+    margin: 0.5                 # Margin: Positive Top-1 should be > max_neg + 0.3
+    correction_margin: 0.4    # 纠错 Ranking Margin
+    correction_weight: 2.0     # 纠错 Ranking 权重
+    # Rationale: Establishes relative ordering (positive > negative)
+    #           Complements absolute classification (CE)
+
+  # NEW (2025-12-12): Focal Loss configuration
+  focal_loss:
+    enable: false              # Enable Focal Loss for STABLE PHASE ONLY (Tier 1/2)
+    alpha: 1.0                # Balancing factor (1.0 = no class weighting)
+    gamma: 2.0                # Focusing parameter (2.0 = standard, higher = more focus on hard samples)
+    # IMPORTANT: Focal Loss只在Stable阶段的Tier 1/2使用
+    #           Warmup阶段Top-1不可靠，使用标准CE（避免放大错误）
+    #           Stable阶段Top-1更可靠，Focal Loss可以处理困难样本
+    # Rationale: Class 10 death (avg_top1_conf=0.033) indicates classification head collapse
+    #           Focal Loss: -(1-pt)^γ * log(pt) auto-downweights easy samples
+    #           When Top-1 confidence low (0.3) -> loss downweighted (protect from wrong selection)
+    #           When Top-1 confidence high (0.8) -> loss upweighted (reinforce correct learning)
+
+  # NEW: Stricter gate for stable phase (prevents wrong Top-1 teaching wrong knowledge)
+  stable_gate:
+    enable: true                     # Enable stricter gate
+    confidence_threshold: 0.55        # Top-1 must have confidence > 0.5
+    require_correct: true            # Top-1 must predict correctly (Argmax == Label)
+    # Rationale: Only "qualified" Top-1 can teach Top-2~K
+    #           Prevents negative transfer from wrong predictions
+
+# ============================================================
+# Optimizer Configuration (Differential Learning Rates)
+# ============================================================
+# Conservative strategy: Pretrained backbone uses small LR, new classifier uses larger LR
+# Bias/BN parameters do NOT decay (handled by optimizer code)
+optimizer:
+  name: "adamw"
+  backbone_lr: 1.0e-5      # Pretrained backbone (stages 3-7, unfrozen)
+  classifier_lr: 5.0e-4    # New MIL classifier head (保守方案5e-5或2e-4稳定收敛,1.0e-3比较激进)
+  weight_decay: 1.0e-2     # L2 regularization (only on weight parameters, not bias/BN)
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+# ============================================================
+# Scheduler Configuration (Trapezoidal LR - Recommended)
+# ============================================================
+# Trapezoidal Strategy (gives warmup phase sufficient energy):
+#   Phase 1 (Epoch 1-5): Linear Warmup (0.01×lr → lr)
+#   Phase 2 (Epoch 6-10): Constant Hold (lr stays at peak)  # NEW!
+#   Phase 3 (Epoch 11-30): Cosine Decay (lr → min_lr)
+# Rationale: Hold phase prevents "energy gap" during warmup → stable transition
+scheduler:
+  name: "trapezoidal"      # Changed from "cosine"
+  warmup_epochs: 5         # Phase 1 duration
+  hold_epochs: 5           # Phase 2 duration (NEW: keep LR at peak)
+  min_lr: 5.0e-7          # Phase 3 target (Cosine decay minimum)
+
+# ============================================================
+# Training Control
+# ============================================================
+training:
+  num_epochs: 30
+  use_amp: true            # Automatic Mixed Precision (设为false如果频繁NaN)
+  gradient_clip: 1.0       # Gradient clipping (防止梯度爆炸，从1.0增大到5.0)
+  eval_every: 1
+  save_every: 5
+
+  # ========== Validation Sampling Configuration ==========
+  # PURPOSE: Quick trend monitoring every epoch (does NOT affect training decisions)
+  # SAMPLING STABILITY: Each bag's sampled tiles are FIXED across epochs
+  #   - Uses hash(image_path) as seed → same tiles every epoch
+  #   - Prevents Val Accuracy jitter from random sampling
+  #   - Metrics are comparable across epochs
+  val_max_bags: 200                # Number of positive bags to sample from val set
+  val_tiles_per_bag: 8             # Tiles per bag (FIXED seed, same tiles every epoch) 每个 bag 的采样 seed 基于 image_path 的 hash
+  val_neg_tiles_ratio: 1.0         # Negative:Positive tile ratio (1.0 = 1600 neg tiles)
+  val_bags_per_batch: 8            # DataLoader batch size (bags per iteration)
+  val_tile_batch_size: 32          # Model inference batch size (tiles per forward)
+
+  # ========== Warmup/Stable Evaluation Sampling Configuration ==========
+  # PURPOSE: STRICT quality check (warmup termination + stable monitoring)
+  # STRATEGY: Scout forward → evaluate on ALL tiles (no sampling)
+  warmup_eval_neg_tiles: 1600      # Negative tiles to evaluate
+  warmup_eval_topk_max_bags: 44    # Bags for Top-K quality (uses all tiles per bag)
+
+  # Checkpoint management
+  checkpoint_root: "checkpoints/topk_asymmetric"
+  keep_last_n: 3
+  save_best_by: "val_loss"
+  save_best_mode: "min"
+
+# ============================================================
+# Hardware Configuration
+# ============================================================
+hardware:
+  device: "cuda:0"
+  max_vram_gb: 8.0   #未被使用
+
+# ============================================================
+# Logging Configuration
+# ============================================================
+logging:
+  enable: true
+  framework: "wandb"
+  project_name: "rice_mil_topk_asymmetric"
+  log_interval: 10
+  log_tile_counts: true  #未使用
+
+# ============================================================
+# Evaluation Configuration
+#  evaluation:
+#    tile_level_metrics: true    # ⚠️ 可能未使用
+#    save_metrics: true          # ⚠️ 可能未使用
+#    metrics_save_path: "..."    # ⚠️ 可能未使用
+#    - 搜索结果: 在local_logger.py、experiment_tracker.py等工具类中存在，但train_topk_asymmetric.py未调用
+# ============================================================
+evaluation:
+  enable: true
+  tile_level_metrics: true   #
+  heatmap_eval_frequency: 10  # Heatmap generation frequency in stable phase (every N epochs)
+  save_metrics: true    #
+  metrics_save_path: "results/topk_asymmetric/metrics.json"    #
+
+  # Confusion Matrix Configuration
+  confusion_matrix:
+    use_hit_acc_filter: true  # 使用Hit-Acc过滤（推荐True，避免bag标注噪音）
+    min_confidence: 0.45       # 最小置信度阈值（与Hit-Acc一致）
+    # Rationale:
+    #   - True: 只统计pred != 0的tiles（过滤掉bag中健康背景）
+    #   - False: 统计所有tiles（会被bag噪音影响，仅用于对比实验）
+
+  # Heatmap Generation Configuration
+  heatmap:
+    # NEW (2025-12-26): Adaptive tile sizes (matches training logic)
+    # Heatmap generation会根据原图大小自适应选择tile_sizes
+    use_adaptive_tiles: true  # 启用自适应（与训练逻辑一致）
+
+    # Large images (>= multiscale_min_size): Multi-scale tiles
+    multiscale_tile_sizes: [1024, 1536, 2048]  # 大图多尺度
+
+    # Small images (< multiscale_min_size): Single-scale tile
+    single_scale_tile_size: 768  # 小图单尺度（与训练一致）
+
+    # Multiscale threshold (same as training)
+    multiscale_min_size: [3000, 4000]  # [H, W] 从dataset.tile_config继承
+
+    stride_ratio: 0.5  # Stride比例（0.5 = 50% overlap）
+    batch_size: 8      # 推理batch size
+    conf_threshold: 0.4  # 检测框置信度阈值
+    top_k: 5             # 显示Top-K个检测框
+    num_samples_per_class: 3  # 每类别抽样数量
+
+    # Rationale:
+    #   - use_adaptive_tiles=true: 根据原图尺寸自动选择tile_sizes（与训练一致）
+    #   - use_adaptive_tiles=false: 固定使用multiscale_tile_sizes（用于对比实验）
+    #   - 所有tiles会resize到model.img_size=384进行推理

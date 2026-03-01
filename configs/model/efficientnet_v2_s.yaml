@@ -1,0 +1,58 @@
+# ============================================================
+# Model Architecture Configuration
+# Target Class: src.rice_detection.models.efficientnet_mil.MILEfficientNetV2S
+# ============================================================
+
+model:
+  name: "mil_efficientnetv2-s"
+  pretrained: true
+  dropout: 0.2
+  img_size: 384
+
+  # Transfer Learning Strategy
+  # Freeze stages 0-2 (stem + early blocks) to preserve low-level feature extraction
+  freeze_stages: [0, 1, 2]
+
+# Number of output classes (CRITICAL: Must match dataset)
+# [2026-01-27] Updated: 10 total classes (1 negative + 9 diseases)
+# Removed: narrow-brown-spot, rice-hispa-damage
+# num_classes = 9 (excluding Class 0 healthy)
+num_classes: 9
+
+# MIL Head Specifics (Coupled with Model Architecture)
+mil:
+  type: "tile_classifier"
+  num_classes: 9  # Rice diseases (9 positive classes, excluding Class 0 healthy)
+  aggregation: "none"  # No aggregation layer (pure instance classifier)
+  include_negative_class: true
+
+# ============================================================
+# Hybrid Architecture Components (FPN + ViT)
+# Pipeline: Backbone → FPN(256ch, 24×24) → ViT(256d) → HeatmapHead
+# All components can be disabled to revert to original architecture
+# ============================================================
+
+# FPN Neck (Top-Down fusion of Stage 3 + Stage 4)
+# Applied FIRST: fuses multi-scale features and reduces dim from 1792 to 256
+fpn_neck:
+  enable: true
+  out_channels: 256  # Output channels for fused features
+  # Note: in_channels_s3 (160) and in_channels_s4 (1792) are auto-detected
+
+# ViT Residual Block (applied AFTER FPN at 256d, 24×24 = 576 tokens)
+# With learnable 2D positional embedding (supports resolution interpolation)
+vit_block:
+  enable: true
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.1
+
+# Heatmap Head (Conv1x1 -> configurable pooling)
+heatmap_head:
+  enable: true
+  # Note: When enabled, model produces spatial heatmaps before pooling
+  # pool_mode: Ablation D - spatial pooling strategy
+  #   "gmp": Global Max Pool (default, current behavior)
+  #   "topk_mean": Top-K Mean Pool (more robust to background peaks, tested effective in inference)
+  pool_mode: "topk_mean"       # [2026-02-25] Ablation D: switched gmp → topk_mean for training experiment.
+  topk_pool_k: 3               # k for topk_mean mode (average top-3 spatial responses per class)

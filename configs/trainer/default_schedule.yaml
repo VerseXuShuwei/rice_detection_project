@@ -1,0 +1,174 @@
+# ============================================================
+# Trainer Configuration
+# ============================================================
+# Purpose: Training loop control and optimization settings
+#   - Optimizer configuration (Differential Learning Rates)
+#   - Scheduler configuration (Trapezoidal LR)
+#   - Training control parameters
+#   - Hardware and logging settings
+#   - Evaluation configuration
+# ============================================================
+
+# ============================================================
+# Optimizer Configuration (Differential Learning Rates)
+# ============================================================
+# Conservative strategy: Pretrained backbone uses small LR, new classifier uses larger LR
+# Bias/BN parameters do NOT decay (handled by optimizer code)
+optimizer:
+  name: "adamw"
+  backbone_lr: 1.0e-5      # Pretrained backbone (stages 3-7, unfrozen)
+  classifier_lr: 3.0e-4    # New MIL classifier head (降低40%: 5e-4→3e-4, Head参数极少需要较高LR)
+  hybrid_lr: 5.0e-5        # FPN/ViT learning rate (降低4倍: 2e-4→5e-5, warmup峰值不超过5e-5)
+  weight_decay: 1.0e-2     # L2 regularization (only on weight parameters, not bias/BN)
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+# ============================================================
+# Scheduler Configuration (Trapezoidal LR - Recommended)
+# ============================================================
+# Trapezoidal Strategy (aligned with hybrid warmup):
+#   Phase 1 (Epoch 1-10): Linear Warmup (0.01×lr → lr) — backbone frozen, hybrid components ramp up
+#   Phase 2 (Epoch 11-15): Constant Hold (lr stays at peak) — backbone unfrozen, joint training at peak LR
+#   Phase 3 (Epoch 16-40): Cosine Decay (lr → min_lr) — stable phase fine-tuning
+# Rationale: LR warmup = backbone freeze period, Hold = backbone+hybrid joint training window
+scheduler:
+  name: "trapezoidal"      # Changed from "cosine"
+  warmup_epochs: 8         # [2026-02-24] Lowered: 10 → 8 (= freeze_backbone_epochs)
+  hold_epochs: 7           # [2026-02-24] Extended: 5 → 7 (more joint training at peak LR after unfreeze)
+  min_lr: 5.0e-7          # Phase 3 target (Cosine decay minimum)
+
+# ============================================================
+# Training Control
+# ============================================================
+training:
+  num_epochs: 30            # [2026-02-25] Shortened: 30 epochs for ablation D (topk_mean pool) experiment
+  use_amp: true            # Automatic Mixed Precision (设为false如果频繁NaN)
+  gradient_clip: 1.0       # Gradient clipping (防止梯度爆炸，从1.0增大到5.0)
+  eval_every: 1
+  save_every: 5
+
+  # ========== Hybrid Warmup Configuration ==========
+  # Purpose: When hybrid components (FPN/ViT/HeatmapHead) are detected,
+  #          freeze backbone for N epochs so new components learn on stable features.
+  # After freeze_backbone_epochs: backbone unfreezes (except permanent freeze_stages [0,1,2])
+  hybrid_warmup:
+    enable: true              # Auto-enabled when hybrid components detected
+    freeze_backbone_epochs: 8  # [2026-02-24] Lowered: 10 → 8, more epochs for backbone joint training
+    backbone_unfreeze_warmup_epochs: 3  # Mini warmup after unfreeze: 3 epochs from 0.1x → 1.0x backbone_lr
+    backbone_unfreeze_start_fraction: 0.1  # Start at 10% of backbone_lr after unfreeze
+
+  # ========== Output Paths Configuration ==========
+  # All training outputs are managed by LocalLogger
+  # Override these to change root output directories
+  paths:
+    logs_root: "outputs/logs"              # → {logs_root}/{experiment}_{timestamp}/
+    checkpoints_root: "outputs/checkpoints"  # → {checkpoints_root}/{experiment}_{timestamp}/
+
+  # ========== Validation Sampling Configuration ==========
+  # PURPOSE: Quick trend monitoring every epoch (does NOT affect training decisions)
+  # SAMPLING STABILITY: Each bag's sampled tiles are FIXED across epochs
+  #   - Uses hash(image_path) as seed → same tiles every epoch
+  #   - Prevents Val Accuracy jitter from random sampling
+  #   - Metrics are comparable across epochs
+  val_max_bags: 200                # Number of positive bags to sample from val set
+  val_tiles_per_bag: 16             # Tiles per bag (FIXED seed, same tiles every epoch) 每个 bag 的采样 seed 基于 image_path 的 hash
+  val_neg_tiles_ratio: 1.0         # Negative:Positive tile ratio (1.0 = 1600 neg tiles)
+  val_bags_per_batch: 8            # DataLoader batch size (bags per iteration)
+  val_tile_batch_size: 32          # Model inference batch size (tiles per forward)
+
+  # ========== Warmup/Stable Evaluation Sampling Configuration ==========
+  # PURPOSE: STRICT quality check (warmup termination + stable monitoring)
+  # STRATEGY: Scout forward → evaluate on ALL tiles (no sampling)
+  warmup_eval_neg_tiles: 1600      # Negative tiles to evaluate
+  warmup_eval_topk_max_bags: 40    # Bags for Top-K quality (uses all tiles per bag)
+
+  # Checkpoint management
+  # Paths managed by LocalLogger (see paths section above)
+  keep_last_n: 3
+  save_best_by: "val_loss"
+  save_best_mode: "min"
+
+# ============================================================
+# Anti-Collapse Configuration (NEW 2026-02-02)
+# ============================================================
+# Purpose: Prevent WSOD Collapse during stable phase training
+# Monitors: Tier 1 ratio, Pos/Neg loss ratio, foreground ratio
+anti_collapse:
+  freeze_bn_in_snipe: true           # Freeze BN layers during Snipe Pass
+                                     # Rationale: Scout uses eval() BN stats, Snipe should match
+                                     #            Prevents BN drift on "Franken-batch" (异源混合batch)
+  monitor_collapse_indicators: true  # Enable collapse warning logs
+                                     # Triggers: Tier 1 ratio < 30%, Pos/Neg loss ratio < 0.5
+  debug_score_drift: false           # Log Scout→Snipe score drift (verbose, for debugging only)
+
+# ============================================================
+# Hardware Configuration
+# ============================================================
+hardware:
+  device: "cuda:0"
+
+# ============================================================
+# Logging Configuration
+# ============================================================
+logging:
+  enable: true
+  framework: "wandb"
+  project_name: "rice_mil_topk_asymmetric"
+  log_interval: 10
+
+# ============================================================
+# Evaluation Configuration
+#  evaluation:
+#    tile_level_metrics: true    # ⚠️ 可能未使用
+#    save_metrics: true          # ⚠️ 可能未使用
+#    metrics_save_path: "..."    # ⚠️ 可能未使用
+#    - 搜索结果: 在local_logger.py、experiment_tracker.py等工具类中存在，但train_topk_asymmetric.py未调用
+# ============================================================
+evaluation:
+  enable: true
+  tile_level_metrics: true
+  save_metrics: true
+  # NOTE: metrics are saved to LocalLogger's evaluation directory automatically
+  #       Path: outputs/logs/{experiment_name}_{timestamp}/evaluation/
+
+
+  # Confusion Matrix Configuration
+  confusion_matrix:
+    use_hit_acc_filter: true  # 使用Hit-Acc过滤（推荐True，避免bag标注噪音）
+    min_confidence: 0.45      # 最小置信度阈值（与Hit-Acc一致）
+    # Rationale:
+    #   - True: 只统计pred != 0的tiles（过滤掉bag中健康背景）
+    #   - False: 统计所有tiles（会被bag噪音影响，仅用于对比实验）
+
+  # Heatmap Generation Configuration
+  heatmap:
+    # === Monitoring Heatmap Settings ===
+    enable: true           # Enable periodic heatmap generation
+    interval: 10           # Generate every N epochs (in stable phase)
+    fixed_samples: true    # Reuse same samples across epochs (track learning progress)
+    num_samples_per_class: 3  # 每类别抽样数量 (统一使用此字段)
+    use_spatial_heatmap: true  # Use full spatial heatmap (recommended) vs simple tile distribution
+
+    # Adaptive tile sizes (matches training logic)
+    # Heatmap generation会根据原图大小自适应选择tile_sizes
+    use_adaptive_tiles: true  # 启用自适应（与训练逻辑一致）
+
+    # Large images (>= multiscale_min_size): Multi-scale tiles
+    multiscale_tile_sizes: [1024, 1536, 2048]  # 大图多尺度
+
+    # Small images (< multiscale_min_size): Multi-scale tiles
+    # MUST match dataset.tile_config.small_image_scales for consistency
+    small_image_tile_sizes: [512, 768, 1024]  # 小图多尺度（与训练一致）
+
+    # Multiscale threshold (same as training)
+    multiscale_min_size: [3000, 4000]  # [H, W]
+
+    stride_ratio: 0.5  # Stride比例（0.5 = 50% overlap）
+    batch_size: 128      # 推理batch size
+    conf_threshold: 0.4  # 检测框置信度阈值
+    top_k: 5             # 显示Top-K个检测框
+
+    # Rationale:
+    #   - use_adaptive_tiles=true: 根据原图尺寸自动选择tile_sizes（与训练一致）
+    #   - use_adaptive_tiles=false: 固定使用multiscale_tile_sizes（用于对比实验）
+    #   - 所有tiles会resize到model.img_size=384进行推理

@@ -1,0 +1,110 @@
+# ============================================================
+# Top-K Asymmetric MIL Training Configuration
+# ============================================================
+# Updated: 2026-01-04 (REFACTORED)
+# Purpose: Main configuration file (Config Combiner)
+#   - Combines modular configs from dataset/, model/, trainer/, algorithm/
+#   - Uses Hydra-style defaults mechanism for composition
+# Strategy: Negative tiles from pool, Positive tiles from Top-K selection
+# Training Unit: Tile-level (not bag-level)
+# Loss: TopK Anchored MIL Loss with phase-aware strategy
+# LR Schedule: Trapezoidal (Warmup → Hold → Cosine Decay)
+# Anti-NaN: Logits clipping + Gradient clipping + Conservative LR
+#
+# usage: 使用新配置加载器新方式（推荐）：
+#  from src.utils.config_io import load_config
+#  config = load_config("configs/algorithm/train_topk_asymmetric.yaml")
+# ============================================================
+
+# ============================================================
+# Config Composition (Hydra-style defaults)
+# ============================================================
+# The actual configs are loaded from separate files:
+#   - dataset: configs/dataset/rice_data.yaml
+#   - model: configs/model/efficientnet_v2_s.yaml
+#   - trainer: configs/trainer/default_schedule.yaml
+#   - algorithm: configs/algorithm/asymmetric_default.yaml
+# These will be merged by src/utils/config_io.py
+# ============================================================
+
+training_strategy:
+  name: "MIL_topk_asymmetric"
+  seed: 42                      # Global random seed for reproducibility
+  deterministic: true           # CUDNN deterministic mode (true=reproducible, false=faster)
+  description: "Asymmetric MIL - Scout-Snipe two-pass strategy with negative tile pool"
+
+# ============================================================
+# Defaults: Specify which configs to load
+# ============================================================
+# NOTE: The config_io.py will load these files and merge them
+# Format: <module>: <filename_without_extension>
+defaults:
+  dataset: rice_data              # configs/dataset/rice_data.yaml
+  model: efficientnet_v2_s        # configs/model/efficientnet_v2_s.yaml
+  trainer: default_schedule       # configs/trainer/default_schedule.yaml
+  algorithm: asymmetric_default   # configs/algorithm/asymmetric_default.yaml
+
+# ============================================================
+# Override Section (Optional)
+# ============================================================
+# You can override specific parameters here if needed
+# Example:
+#   training:
+#     num_epochs: 50  # Override trainer's num_epochs
+# ============================================================
+
+# ============================================================
+# Inference Configuration (for inference_gui.py)
+# ============================================================
+inference:
+  tile_size: 384                # Input tile size for model
+  stride_ratio: 0.5             # Stride = tile_size * stride_ratio
+  batch_size: 8                 # Batch size for inference (VRAM dependent)
+  scales: [1.0, 0.75, 0.5]      # Multi-scale scanning factors
+  top_k: 5                      # Number of top tiles to display
+  conf_threshold: 0.3           # Minimum confidence for disease detection
+  cam_method: "eigencam"        # CAM method: "eigencam" | "gradcam++"
+  cam_target_layer: "conv_head" # timm EfficientNetV2 final conv layer (null=auto-detect)
+
+# ============================================================
+# Heatmap Generation (full-image inference tile scales)
+# ============================================================
+# CRITICAL: Tile crop sizes MUST match training distribution.
+# Training uses tile_pool_common.scales: [768, 1024, 1536]
+# (actual crop sizes before resize to 384)
+# Do NOT add 2048 — model was never trained on it.
+heatmap_generation:
+  # Large image tiles (for images >= multiscale_min_size)
+  multiscale_tiles: [768, 1024, 1536]
+  # Small image tiles (for phone photos ~1600x2000)
+  small_image_tiles: [384, 512, 768]
+  # Adaptive threshold: (min_h, min_w) to choose large vs small tiles
+  multiscale_min_size: [2000, 2500]
+  stride_ratio: 0.5
+  batch_size: 8
+  use_adaptive: true
+  # Per-class Top-K spatial normalization (inference-only, no training impact)
+  # Divides each disease channel by its spatial top-K mean after stitch,
+  # so disease peaks are self-normalized regardless of background coverage.
+  # Set to 0 to disable. Recommended: 3
+  topk_norm_k: 3
+  # BG-aware heatmap accumulation weight (inference-only)
+  # tile_weight = max(0, 1 - alpha * bg_prob)
+  # alpha=2.0: bg_prob >= 0.5 → weight=0 (majority-background tiles contribute nothing)
+  # alpha=1.0: softer falloff (bg_prob=0.5 → weight=0.5)
+  # alpha=0.0: disabled (original uniform weighting)
+  bg_aware_alpha: 2.0
+  # BG-region max filter (extract_detections post-processing)
+  # Discard detection regions where mean class-0 probability > this threshold.
+  # Catches regions that still passed CCA despite bg-aware accumulation.
+  # Set to 1.0 to disable.
+  bg_region_max: 0.5
+  # Tile-edge feathering: smooth count_map transitions to eliminate grid artifacts.
+  # Each tile's spatial contribution is weighted by a raised-cosine (Hann) mask:
+  # center = 1.0, edges taper to ~0 over feather_ratio fraction of tile size.
+  # feather_ratio=0.0: disabled (sharp tile boundaries, original behavior)
+  # feather_ratio=0.15: 15% border zone tapers → recommended default
+  feather_ratio: 0.15
+
+# End of main configuration file
+# All detailed configs are in the separate module files listed above

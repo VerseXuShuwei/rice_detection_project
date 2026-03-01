@@ -1,0 +1,242 @@
+# ============================================================
+# Dataset Configuration
+# ============================================================
+# Purpose: Rice disease dataset configuration
+#   - Class definitions and mappings
+#   - Dataset paths and split ratios
+#   - Tile generation strategy (Curriculum Learning)
+#   - Negative tile pool configuration
+#   - Data augmentation settings
+# ============================================================
+
+# ============================================================
+# Class Definitions (Single Source of Truth)
+# ============================================================
+# CRITICAL: This is the canonical class order for the entire project.
+# All modules (dataset, evaluation, visualization) MUST use this config.
+# DO NOT hardcode class names elsewhere in the codebase.
+# ============================================================
+# [2026-01-27] Removed: narrow-brown-spot (only 150 images, too few)
+#                       rice-hispa-damage (data quality issues, confusion)
+# Total: 9 disease classes + 1 background = 10 classes
+# ============================================================
+classes:
+  # Class 0 is always Background/Negative (rice-healthy)
+  negative_class_name: "rice-healthy"
+
+  # Positive classes (1-9) - folder name order
+  # This order determines class_id mapping across training and evaluation
+  # MUST match actual folder names in data/total_rice_image/
+  class_order:
+    - "bacterial-leaf-blight"           # Class 1
+    - "bacterial-sheath-brown-rot"      # Class 2
+    - "brown-spot"                      # Class 3
+    - "false-smut"                      # Class 4
+    - "leaf-blast"                      # Class 5
+    - "node-neck-blast"                 # Class 6
+    - "rice-leaf-beetle"                # Class 7
+    - "rice-leaf-folder"                # Class 8
+    - "sheath-blight"                   # Class 9
+
+  # Display names for visualization and reports
+  display_names:
+    0: "Background"
+    1: "Bacterial Leaf Blight"
+    2: "Bacterial Sheath Brown Rot"
+    3: "Brown Spot"
+    4: "False Smut"
+    5: "Leaf Blast"
+    6: "Node Neck Blast"
+    7: "Rice Leaf Beetle"
+    8: "Rice Leaf Folder"
+    9: "Sheath Blight"
+
+  # Short names for confusion matrix / compact display
+  short_names:
+    0: "BG"
+    1: "Bact-Leaf-Blight"
+    2: "Bact-Sheath-Rot"
+    3: "Brown-Spot"
+    4: "False-Smut"
+    5: "Leaf-Blast"
+    6: "Node-Neck-Blast"
+    7: "Rice-Beetle"
+    8: "Rice-Folder"
+    9: "Sheath-Blight"
+
+dataset:
+  name: total_rice_image
+  root: data/total_rice_image
+
+  negative_class_name: "rice-healthy"  # Negative class (Class 0) - legacy compat
+  min_samples: 50  # Filter out long-tail classes
+
+  final_tile_size: 384  # Final tile size after resize
+
+  # Train/Val split ratio
+  train_ratio: 0.8
+  val_ratio: 0.2
+
+  # fallback :positive pool.enable: true=LMDB offline, false=real-time tiling
+  # Tile generation config (Adaptive Multi-scale)
+
+  tile_config:
+    # Multi-scale threshold
+    multiscale_min_size: [3000, 4000]  # [H, W] Large images use multi-scale
+
+    # Large images (>= multiscale_min_size): Multi-scale tiles
+    scales: [1024, 1536, 2048]  # Standard → Wide → Ultra-wide
+    overlaps: [48, 64, 96]       # ~4.7%, ~4.2%, ~4.7% (sufficient for small lesions)
+
+    # Small images (< multiscale_min_size): Multi-scale tiles (NEW 2026-01-21)
+    # Rationale: Small images also benefit from multi-scale to capture lesions at different receptive fields
+    small_image_scales: [512, 768, 1024]   # Adapted scales for small images
+    small_image_overlaps: [64, 96, 128]    # Larger overlap ratio for smaller tiles
+
+    # Legacy single-scale config (fallback if small_image_scales not set)
+    # single_scale_tile_size: 1024
+    # single_scale_overlap: 256
+
+    # Rationale:
+    #   - Large images: Multi-scale [1024, 1536, 2048] captures various lesion sizes
+    #   - Small images: Multi-scale [512, 768, 1024] with larger overlap preserves details
+    #   - All tiles resize to 384 for model input
+
+    max_tiles_per_bag: 65     # Scout Pool limit
+    min_image_size: 1024
+
+
+  # RAM caching (disabled for memory optimization)
+  ram_cache:
+    enable: false
+    max_images: 32
+
+  # DataLoader optimization
+  num_workers: 6
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+
+# ============================================================
+# Offline Tile Pool - Shared Configuration
+# ============================================================
+# SINGLE SOURCE OF TRUTH for tile generation parameters.
+# Both positive_pool and negative_pool inherit from here.
+# ============================================================
+# [2026-01-27] Updated:
+#   - Removed 2048 scale (too large for 8GB VRAM, information loss after resize)
+#   - Changed min_short_edge: 512 → 768 (align with minimum scale)
+#   - Added map_size config for LMDB storage
+# ============================================================
+tile_pool_common:
+  # Multi-scale configuration (3 scales with 25% overlap)
+  scales: [768, 1024, 1536]             # Tile sizes before resize
+  overlaps: [192, 256, 384]             # 25% overlap for each scale
+  final_tile_size: 384                  # All tiles resize to this size
+
+  # Storage options
+  compression_format: "jpeg"            # "jpeg" (50KB) or "pickle" (440KB)
+  jpeg_quality: 95                      # JPEG quality (95 = high quality)
+  map_size_gb: 50                       # LMDB map size in GB (configurable)
+
+  # Garbage filtering (HSV-based)
+  # valid_pixel_threshold: 0.3 means tiles with <30% valid pixels are filtered
+  # i.e., tiles with >70% pure black/white are considered garbage
+  filter_invalid: true                  # Enable garbage tile filtering
+  valid_pixel_threshold: 0.3            # Min valid pixel ratio (30% valid = 70% garbage threshold)
+
+  # Narrow image handling
+  min_short_edge: 768                   # Pad images with short edge < 768
+  padding_mode: "reflect"               # reflect / constant / edge
+
+  # Build options
+  batch_size: 50                        # Images per LMDB transaction
+
+  # Rationale:
+  #   - 3 scales [768/1024/1536] cover micro to macro lesion views
+  #   - 2048 removed: too large, causes info loss when resized to 384
+  #   - 25% overlap ensures boundary lesions are captured
+  #   - JPEG compression: ~8GB storage for ~160k tiles (vs ~70GB pickle)
+
+# ============================================================
+# Positive Tile Pool Configuration
+# ============================================================
+# Inherits: tile_pool_common (scales, overlaps, final_tile_size, etc.)
+# Specific: Coordinate metadata for Spatial NMS
+# ============================================================
+positive_pool:
+  enable: true                                # true=LMDB offline, false=real-time tiling
+  lmdb_path: "data/positive_pool.lmdb"        # LMDB storage path
+  split_file: "data/positive_pool_split.json" # Train/Val split persistence
+  rebuild: false                              # Force rebuild if true
+
+  # Feature storage for Feature Critic (解决特征漂移问题)
+  # When enabled, pre-computed features are stored alongside tiles in LMDB.
+  # Features are extracted using frozen pretrained backbone (same as build_prototypes.py)
+  # This ensures Feature Critic uses features from the same space as prototypes.
+  store_features: true                        # Enable offline feature storage
+  feature_dim: 1792                           # EfficientNetV2-RW-S feature dimension (stage4 output)
+
+  # Note: Inherits from tile_pool_common:
+  #   scales, overlaps, final_tile_size, compression_format, jpeg_quality,
+  #   filter_invalid, valid_pixel_threshold, min_short_edge, padding_mode
+
+# ============================================================
+# Negative Tile Pool Configuration
+# ============================================================
+# Inherits: tile_pool_common (scales, overlaps, final_tile_size, etc.)
+# Specific: Hard mining, sampling distribution
+# ============================================================
+negative_pool:
+  enable: true
+  lmdb_path: "data/negative_pool.lmdb"
+  split_file: "data/negative_pool_split.json"  # Train/Val split persistence
+  rebuild: false
+  max_pool_size: 150000                        # Max tiles to store (reduced for 3 scales)
+  train_ratio: 0.8                             # Train/Val split ratio
+
+  # Note: Inherits from tile_pool_common:
+  #   scales, overlaps, final_tile_size, compression_format, jpeg_quality,
+  #   filter_invalid, valid_pixel_threshold, batch_size, map_size_gb
+
+  # Sampling distribution for training (3 scales)
+  # Rationale: Smaller scales = clearer = more useful for learning
+  scale_ratios:
+    768: 0.45    # Small scale: 45% (clearest, best detail preservation)
+    1024: 0.35   # Medium scale: 35%
+    1536: 0.20   # Large scale: 20% (more context, less detail)
+
+# ============================================================
+# Data Augmentation Configuration
+# ============================================================
+augmentation:
+  geometric:
+    enable_crop: true
+    crop_scale: [0.85, 1.0]
+    enable_hflip: true
+    hflip_prob: 0.5
+    enable_vflip: true
+    vflip_prob: 0.3
+    enable_rotate: true
+    rotate_limit: 15
+    rotate_prob: 0.5
+
+  color:
+    enable: true
+    prob: 0.7
+    brightness_limit: 0.2
+    contrast_limit: 0.2
+    hue_shift_limit: 10
+    sat_shift_limit: 20
+    val_shift_limit: 20
+
+  noise:
+    enable: true
+    prob: 0.3
+    var_limit: [5, 15]
+
+  random_erasing:
+    enabled: true
+    prob: 0.3
+    area_range: [0.02, 0.15]
+    aspect_ratio: [0.3, 3.3]

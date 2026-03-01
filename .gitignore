@@ -1,0 +1,82 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyTorch
+*.pth
+*.pt
+
+# Training Outputs (NEW: Separated structure)
+outputs/                    # All training outputs
+├── logs/                   # Metrics, curves, heatmaps, 
+└── checkpoints/            # Model checkpoints and states
+
+# Legacy (for migration compatibility)
+results/                    # Old output directory (deprecated)
+
+# Data
+data/                       # Large datasets
+*.lmdb                      # LMDB files (negative pool)
+*.mdb
+
+# Temporary files
+*.log
+*.tmp
+.cache/
+temp/
+tmp/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Claude
+.claude/
+data/
+outputs/
+notebooks/
+refactor_docs/
+docs/
+*-cwd
+*.md

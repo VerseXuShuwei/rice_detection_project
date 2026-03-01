@@ -1,0 +1,242 @@
+# ============================================================
+# Asymmetric MIL Algorithm Configuration
+# ============================================================
+# Purpose: Core MIL algorithm parameters
+#   - Asymmetric MIL training strategy (Warmup/Stable phases)
+#   - Hard Negative Mining configuration
+#   - Loss function configuration (TopK Anchored MIL Loss)
+#   - MIL head configuration
+# ============================================================
+
+# ============================================================
+# Asymmetric MIL Training Strategy
+# ============================================================
+# [2026-01-27] Updated for 9 disease classes (removed narrow-brown-spot, rice-hispa-damage)
+# Total classes: 9 disease + 1 background = 10 classes
+asymmetric_mil:
+  # Warm-up phase (fault-tolerant learning)
+  # Sampling: 6 bags × 4 K = 24 positive + 8 negative = 32 tiles (3:1 ratio)
+  # Rationale: 6 bags covers 67% of 9 classes, sufficient diversity for warmup
+  warmup_epochs: 15          # [2026-02-26] Reverted: 20 → 15 (align with LR hold end, stable starts at peak LR epoch 16)
+  warmup_bags_per_batch: 6    # 6 different disease classes, 67% class coverage
+  warmup_k: 4                 # 4 top-K tiles per bag
+  warmup_neg_tiles: 8         # 8 negative tiles per batch (fills GPU to 32 total)
+
+  # Stable phase (fine discrimination)
+  # [2026-02-02] Anti-Collapse: Moderately adjusted
+  # Sampling: 9 bags × 3 K = 27 positive + 9 negative = 36 tiles (3:1 ratio)
+  # Rationale: K=3 provides diversity; 9 negatives maintains discrimination ability
+  stable_bags_per_batch: 9    # 9 different disease classes, 100% class coverage
+  stable_k: 3                 # [2026-02-02] Changed: 2 → 3 (prevents overfitting to Top-1)
+  stable_neg_tiles: 9         # [2026-02-02] Changed: 14 → 9 (balanced, not too extreme)
+
+  # Scout phase parameters
+  scout_batch_size: 32
+
+  # Augmentation consistency (CRITICAL: must be true)
+  cache_augmented_tiles: true
+
+  # Hard Negative Mining (NEW 2025-12-10)
+  # Prioritizes recall-failed tiles to enhance Ranking Loss effectiveness
+  # Rationale: Hard negatives increase max_neg_prob → stronger gradient signal for Top-1
+  hard_negative_mining:
+    enable: true
+    warmup_hard_ratio: 0.25   # Warmup: 25% hard negatives + 75% random
+    stable_hard_ratio: 0.25   # Stable: 25% hard negatives + 75% random
+    # Strategy: Hard negatives = tiles predicted as disease (recall failed)
+    # Effect: Forces Top-1 to be more confident (pos_conf > max_neg + margin)
+
+    # Blacklist Mechanism (NEW 2025-12-11)
+    # Tiles that fail recall >= max_failures times are permanently excluded from sampling
+    # Rationale: Likely annotation errors or true confusions that pollute training
+    max_failures_before_blacklist: 10  # Cumulative failures (non-consecutive)
+
+    # Life Decay Mechanism (NEW 2025-12-11)
+    # Prevents "zombie" hard negatives that never get sampled for verification
+    # Life points decay each epoch; tiles drop out when life reaches 0
+    initial_life_points: 5  # Starting life for new hard negatives (epochs until auto-removal)
+
+  # Warm-up termination criteria (3 P0 criteria must pass)
+  # NEW (2025-12-10): Added per-class analysis to prevent某类别死亡but平均值通过
+  warmup_criteria:
+    # Background Suppression
+    neg_recall_threshold: 0.70        # Model recognizes backgrounds
+    neg_disease_hallucination_threshold: 0.30    # Max disease prob on backgrounds (lower=better, must be < threshold)
+    # Top-K Quality (Global Metrics)
+    topk_lift_threshold: 0.25         # Top-K selection is not random
+
+    # P1 criteria Reference (not used for warmup termination) Per-Class Quality (prevents困难类别完全崩溃)
+    top1_confidence_threshold: 0.50   # Top-1 tile confidence on true class (global avg)
+    class_coverage_threshold: 0.8     # At least 80% classes达标 (allows 20% difficult classes)
+    min_class_conf_threshold: 0.3     # Worst class confidence >= 0.3 (兜底保护)
+    qualified_class_conf: 0.5         # Single class "达标" standard (used in coverage calculation)
+    topk_avg_confidence_threshold: 0.60 # Average confidence of Top-K tiles
+
+# ============================================================
+# Loss Function Configuration
+# ============================================================
+# Top-K Anchored MIL Loss with Dynamic Weighting and Ranking Constraint
+# Warmup: Top-1 CE anchor + Top-2~K NR (tolerates noise)
+# Stable: Top-1 CE anchor + Top-2~K KL Distill (stricter gate) + Inter-bag Ranking
+# NEW (2025-12-10): Dynamic weight + Ranking loss + Stricter gate
+loss:
+  type: "topk_anchored_mil"
+
+  # Base configuration
+  top1_ce_weight: 5.0       # λ1: Top-1 CE weight (base, will be scaled by dynamic_weight) [2026-02-05] Restored
+  top2k_nr_weight: 0.3     # λ2: Top-2~K outer weight (Warmup phase); inner weak_ce=0.1, effective=0.03
+  top2k_soft_weight: 0.3    # λ3: Top-2~K Soft Bootstrap weight (Stable phase)
+  stable_nr_weight: 0.3     # Stable 阶段tier2 Top-2~K 的 NR 权重
+  noise_drop_threshold: 0.7  # [2026-01-16] Changed: 0.4 → 0.5 (less aggressive dropout)
+                             # Tier 3噪声熔断阈值：如果 (预测conf - 标注conf) > threshold，判定为标注错误，Loss=0
+
+  alpha: 0.95               # Initial alpha for progressive soft bootstrap
+  epsilon: 1.0e-8           # Numerical stability constant
+
+  # NEW: Dynamic weighting (adaptive to Top-K reliability)
+  # [2026-01-16] Analysis: With Feature Critic in warmup, Top-1 quality is better protected.
+  #              But still start conservative to avoid anchoring residual noise.
+  dynamic_weight:
+    enable: true                # Enable dynamic Top-1 CE weight
+    warmup_weight: 0.5          # [2026-01-16] Changed: 1.0 → 0.5 (moderate, FC provides protection)
+    stable_weight: 1.5          # [2026-01-16] Changed: 2.0 → 1.5 (sufficient with good Top-1)
+    growth_epochs: 10           # [2026-01-16] Changed: 8 → 10 (slower transition)
+    # Rationale: Initial Top-K selection unreliable -> weak supervision
+    #           As training progresses -> gradual increase
+
+  # NEW: Ranking constraint (prevents model collapse)
+  # [2026-01-16] Analysis: Ranking is auxiliary to CE, should not dominate.
+  ranking:
+    enable: true                # Enable inter-bag ranking loss
+    inter_weight: 1.0           # [2026-01-16] Changed: 2 → 1.0 (auxiliary role)
+    margin: 0.3                 # [2026-01-16] Changed: 0.5 → 0.3 (achievable target)
+    correction_margin: 0.4      # 纠错 Ranking Margin
+    correction_weight: 1.0      # 纠错 Ranking 权重
+    # Rationale: Establishes relative ordering (positive > negative)
+    #           Complements absolute classification (CE)
+
+  # NEW (2025-12-12): Focal Loss configuration
+  focal_loss:
+    enable: false              # Enable Focal Loss for STABLE PHASE ONLY (Tier 1/2)
+    alpha: 1.0                # Balancing factor (1.0 = no class weighting)
+    gamma: 2.0                # Focusing parameter (2.0 = standard, higher = more focus on hard samples)
+    # IMPORTANT: Focal Loss只在Stable阶段的Tier 1/2使用
+    #           Warmup阶段Top-1不可靠，使用标准CE（避免放大错误）
+    #           Stable阶段Top-1更可靠，Focal Loss可以处理困难样本
+    # Rationale: Class 10 death (avg_top1_conf=0.033) indicates classification head collapse
+    #           Focal Loss: -(1-pt)^γ * log(pt) auto-downweights easy samples
+    #           When Top-1 confidence low (0.3) -> loss downweighted (protect from wrong selection)
+    #           When Top-1 confidence high (0.8) -> loss upweighted (reinforce correct learning)
+
+  # Stable phase loss mode (Ablation C switch)
+  # "tiered": Three-tier stratification (Tier1 strong CE, Tier2 weak CE, Tier3 noise-drop)
+  # "simple": Unified CE on all Top-K + ranking, no stratification (ablation baseline)
+  #           Simpler, lets model learn without manual gating. Useful when Tier1 ratio is low.
+  stable_loss_mode: "tiered"         # "tiered" | "simple"
+
+  # NEW: Stricter gate for stable phase (prevents wrong Top-1 teaching wrong knowledge)
+  stable_gate:
+    enable: true                     # Enable stricter gate
+    confidence_threshold: 0.45       # [2026-02-26] Raised: 0.25 → 0.45
+                                     # Rationale: 0.25 ≈ random baseline for 10 classes (not meaningful gate)
+                                     #            per-bag KL now has Gate B (correct direction) as quality guard,
+                                     #            so Tier1 admission can be stricter without losing KL coverage
+    require_correct: true            # Top-1 must predict correctly (Argmax == Label)
+    # Rationale: Only "qualified" Top-1 can teach Top-2~K
+    #           Prevents negative transfer from wrong predictions
+
+  # ============================================================
+  # Anti-Collapse Configuration (NEW 2026-02-02)
+  # ============================================================
+  # Purpose: Prevent WSOD Collapse (foreground ratio decline + Silence Spiral)
+  # Root causes addressed:
+  #   1. BN layer drift between Scout (eval) and Snipe (train) passes
+  #   2. Tier 2 NR creating negative feedback loop
+  #   3. Excessive negative tiles dominating gradients
+  anti_collapse:
+    tier2_top2k_strategy: "weak_ce"  # "weak_ce" (default) | "silence" | "nr" (legacy/ablation)
+                                     # "weak_ce": Gentle CE on Top-2~K when Tier2 teacher (direction unreliable)
+                                     # "silence": No Top-2~K supervision (safest, zero gradient)
+                                     # "nr": DEPRECATED legacy Negative Rejection, kept for ablation only
+
+    # Tier 2 Top-1 supervision weight (Marginal: correct pred but low-conf)
+    # Applied as: tier2_weak_weight * top1_ce_weight * CE(tier2_tiles)
+    # [2026-02-26] Updated: 0.3 → 1.0 — Top-1 prediction direction is trustworthy in Tier2
+    #   (model predicts correct class, just low confidence → full CE to push confidence up)
+    tier2_weak_weight: 1.0           # Full weight: Tier2 Top-1 is correct, needs strong signal
+
+    # Tier 3 Safety Net (all Top-1 wrong → model collapse prevention)
+    # Triggered when tier1_count + tier2_count == 0 (complete Tier 3 collapse)
+    # Provides minimal positive gradient to prevent unrecoverable loss of positive features
+    tier3_fallback_top1_weight: 0.3  # ~6% of normal T1 weight (0.3 × top1_ce_weight=5.0 vs T1=5.0)
+    tier3_fallback_top2k_weight: 0.1 # Weak CE on Top-2~K in fallback scenario
+
+    # Tier 2 Top-2~K weak_ce weight (when tier2_top2k_strategy == "weak_ce")
+    # Applied as: weak_ce_weight * CE(top2k_tiles, bag_label)
+    # Rationale: Even marginal Teacher provides correct gradient direction for Top-2~K
+    tier2_top2k_weak_ce_weight: 0.1  # 10% of normal CE (very gentle, anti-Silence-Spiral)
+
+# ============================================================
+# Scale-Diversity Top-K Configuration (NEW 2026-02-08)
+# ============================================================
+# Purpose: Encourage multi-scale representation in Top-K tile selection.
+# Principle: With offline multi-scale tiling [768, 1024, 1536], pure Top-K
+#            may select all tiles from one scale. Scale-diversity penalizes
+#            same-scale tiles so different scales get representation.
+# Applied: DURING Top-K selection in Scout Pass (replaces Spatial NMS).
+scale_diversity:
+  enable: true                        # Master switch
+  penalty: 0.5                        # Score multiplier for same-scale tiles (0.5 = halve)
+                                      # Lower = stronger diversity enforcement
+  # Rationale:
+  #   - 0.3 = aggressive (strongly prefer different scales)
+  #   - 0.5 = balanced (different scale preferred when scores are comparable)
+  #   - 0.8 = mild (only switch scale if clearly better)
+  #   - penalty=0.5 means: a 1024-tile scoring 0.8 beats a same-scale
+  #     tile scoring 0.9 (0.9*0.5=0.45 < 0.8) but not one scoring 1.7
+
+# ============================================================
+# Spatial NMS Configuration (LEGACY - kept for ablation)
+# ============================================================
+# NOTE: With offline tiles at 25% overlap, same-scale IoU is too low to trigger
+#       NMS, and cross-scale IoU never reaches 0.7. Effectively a no-op.
+#       Replaced by scale_diversity above. Keep for ablation comparison.
+spatial_nms:
+  enable: false                       # Disabled: replaced by scale_diversity
+  iou_threshold: 0.7                  # IoU threshold for suppression
+  stable_phase_enable: false          # Disable NMS in stable phase
+
+# ============================================================
+# Feature-Space Critic Configuration (NEW 2026-01-14)
+# ============================================================
+# Purpose: Background suppression in Scout Pass using prototype similarity
+# Principle: Use frozen "background constitution" to filter out background tiles
+#            from positive bags, preventing them from being selected as Top-K
+feature_critic:
+  enable: false                      # [2026-02-05] DISABLED for baseline test
+
+  # === Phase 0: Prototype Construction ===
+  construction:
+    source_pool: "negative"          # Use negative pool as background source
+    num_prototypes: "auto"           # "auto" (elbow+silhouette) or int (e.g., 5)
+    auto_k_range: [4, 10]            # Search range for auto k-selection
+    threshold_percentile: 5.0        # Percentile for recommended threshold (P5 = cover 95% background)
+    save_path: "outputs/prototypes/background_prototypes.pth"
+    vis_output_path: "outputs/prototypes/cluster_vis.html"  # Auto-generate t-SNE viz
+
+  # === Phase 1-2: Runtime Application ===
+  # DESIGN RATIONALE (2026-01-16 Updated):
+  #   Prototypes are OFFLINE-generated from negative pool (frozen external prior).
+  #   In Warmup: model discrimination is weak → Top-K selection near-random
+  #              → background tiles may be selected as Top-1 → wrong gradient anchoring
+  #   Feature Critic provides EXTERNAL PRIOR to reject background tiles BEFORE Top-K selection.
+  #   This is most valuable in Warmup when model can't self-discriminate.
+  #   In Stable: model has learned discrimination → Feature Critic becomes redundant.
+  runtime:
+    threshold: 0.94                  # [2026-02-04] 基于分析脚本计算
+                                     # 正样本 P5=0.7774 < 负样本 P5=0.8228
+                                     # 阈值 0.86 保护正样本最低 5% 不被抑制
+    auto_threshold: false            # [2026-02-04] 关闭自动阈值，使用分析计算值
+    penalty_scale: 0.5               # [2026-02-04] 恢复默认惩罚力度
+    apply_phase: "warmup"            # [2026-02-04] 只在 warmup 阶段使用
+                                     # Stable 阶段模型已有判别力，无需外部先验
