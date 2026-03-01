@@ -27,7 +27,7 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 
 ![detection box](results/detection_box_example.png)
 
-top-1 detection box scores 0.892; other top-2~5 box below 0.6
+> top-1 detection box scores 0.892; other top-2~5 box below 0.6
 
 ![Heatmap Visualization](results/perclass_heatmap_example.png)
 
