@@ -23,13 +23,11 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 
 ![Model Architecture](docs/architecture.png)
 
-results/perclass_heatmap_example.png
-  results/perclass_heatmap_example.png
-</a>
-``
 ## Results
 
 ![detection box](results/detection_box_example.png)
+
+<img src="results/perclass_heatmap_example.png" alt="Heatmap Visualization" width="60%"/>
 
 > top-1 detection box scores 0.892; other top-2~5 boxes below 0.6
 
