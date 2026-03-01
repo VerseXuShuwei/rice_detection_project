@@ -42,8 +42,9 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 | Negative Hallucination | **3.6%** |
 | Tiles Retained | **47.3%** |
 
+<p align="center">
 <img src="results/confusion_matrix_filtered.png" alt="confusion matrics" width="60%"/>
-
+</p>
 ---
 
 ## Method: Scout-Snipe Asymmetric MIL
