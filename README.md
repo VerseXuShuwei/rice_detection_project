@@ -19,6 +19,14 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 - **9 disease classes** + background (10-class classification)
 - **Hardware**: Trained entirely on RTX 4060 Laptop (8GB VRAM)
 
+## Architecture
+
+![Model Architecture](docs/architecture.png)
+
+## Results
+
+![Heatmap Visualization](results/heatmap_example.png)
+
 ### Key Results
 
 | Metric | Value |
