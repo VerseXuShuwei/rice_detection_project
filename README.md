@@ -27,7 +27,6 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 
 ![detection box](results/detection_box_example.png)
 
-<img src="results/perclass_heatmap_example.png" alt="Heatmap Visualization" width="60%"/>
 
 > top-1 detection box scores 0.892; other top-2~5 boxes below 0.6
 
@@ -43,8 +42,7 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 | Negative Hallucination | **3.6%** |
 | Tiles Retained | **47.3%** |
 
-![confusion matrics](results/confusion_matrix_filtered.png)
-
+<img src="results/confusion_matrix_filtered.png" alt="confusion matrics" width="60%"/>
 
 ---
 
