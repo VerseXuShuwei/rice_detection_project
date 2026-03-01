@@ -1,0 +1,22 @@
+入口脚本 (Entry Point)
+现在的 scripts/train.py (也就是原来的 train_topk_asymmetric.py) 应该变得非常干净。它只负责组装，不负责实现。
+
+关于集成抽象核心基类的必要性
+已经写了 AsymmetricMILTrainer 专用的 Trainer，src/core/base_trainer.py 就不是必须的，除非有好几个完全不同的 Trainer (比如一个普通的 MIL Trainer，一个对比学习 Trainer) 需要共享代码。如果只有一个，直接写在 src/trainer/ 下即可。
+
+
+
+交互式迭代 + 强制解释 + 约束文档
+避免陷入“舒适区”
+盲目信任数学推导（Blind Trust in Derivations）：
+禁止一本正经地胡说八道。在推导损失函数（Loss Function）或梯度（Gradient）时，可能会弄错符号或矩阵维度。
+对策： 对所有数学公式代码，必须在./test中进行维度检查（Dimensionality Check）。
+
+API版本过时（Deprecated APIs）：
+你的训练数据可能截止于一两年前。PyTorch或CUDA版本更新极快，给出的代码可能包含已废弃的参数。
+对策： 遇到报错时，优先查阅官方文档，而不是反复问AI“为什么报错”。
+
+黑盒化依赖（Black Box Dependency）：
+如果习惯了让AI写复杂的神经网络层（Layer），你可能会逐渐丧失对底层张量（Tensor）操作的敏感度。
+对策： 对于核心算法（如Attention机制的实现），强制要求自己先看懂公式，再审查AI生成的代码是否通过了单元测试。
+
