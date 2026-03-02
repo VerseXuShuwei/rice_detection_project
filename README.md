@@ -182,9 +182,9 @@ These failed experiments informed our final design:
 
 1. **Feature Critic with ImageNet features** — Pretrained features see healthy and diseased tiles as nearly identical (cosine sim gap: −0.0009). ImageNet provides no meaningful prior for rice pathology.
 
-2. **Spatial NMS** — With 50% tile overlap, IoU never reaches the 0.7 threshold across scales. Effectively a no-op. Replaced with Scale Diversity.
+2. **Spatial NMS** — Limited effectiveness With tile overlap. Replaced with Scale Diversity.
 
-3. **Negative Rejection loss** — Gradient direction ("don't be disease") conflicts with Top-1 CE ("be this disease"), causing progressive suppression of positive responses.
+3. **Negative Rejection loss** — Gradient direction ("don't be disease" to top2~k) conflicts with Top-1 CE ("be this disease"), causing progressive suppression of positive responses.
 
 ---
 
