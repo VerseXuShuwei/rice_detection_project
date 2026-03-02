@@ -177,11 +177,11 @@ The pretrained backbone sees rice disease tiles and healthy tiles as nearly iden
 
 ### 6.2 Spatial NMS: Ineffective Due to Tiling Geometry
 
-With 50% tile overlap, same-scale IoU is too low and cross-scale IoU never reaches the 0.7 threshold. Spatial NMS was effectively a no-op. Replaced with Scale Diversity (preferring different scales for Top-2~K selection).
+With tile overlap, same-scale IoU is Limited effectiveness, Replaced with Scale Diversity (preferring different scales for Top-2~K selection).
 
 ### 6.3 Negative Rejection (NR): Causes Silence Spiral
 
-NR loss gradient direction ("don't be disease") directly conflicts with Top-1 CE direction ("be this disease"), progressively suppressing positive sample responses. Deprecated in favor of weak CE for Tier 2 Top-2~K.
+NR loss gradient direction ("don't be disease" to top2~k tiles) directly conflicts with Top-1 CE direction ("be this disease"), progressively suppressing positive sample responses. Deprecated in favor of weak CE for Tier 2 Top-2~K.
 
 ---
 
