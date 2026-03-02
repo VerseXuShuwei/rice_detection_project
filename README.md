@@ -12,7 +12,7 @@
 
 ## Overview
 
-Traditional rice disease detection requires expensive pixel-level or bounding-box annotations from domain experts. This project eliminates that requirement entirely:
+Traditional rice disease detection requires expensive pixel-level or bounding-box annotations from domain experts. This project decreased that requirement:
 
 - **Input**: Image-level labels only ("this image contains Brown Spot")
 - **Output**: Spatial heatmaps + detection boxes showing *where* the disease is
