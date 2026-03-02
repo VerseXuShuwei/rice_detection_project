@@ -181,7 +181,7 @@ With tile overlap, same-scale IoU is Limited effectiveness, Replaced with Scale 
 
 ### 6.3 Negative Rejection (NR): Causes Silence Spiral
 
-NR loss gradient direction ("don't be disease" to top2~k tiles) directly conflicts with Top-1 CE direction ("be this disease"), progressively suppressing positive sample responses. Deprecated in favor of weak CE for Tier 2 Top-2~K.
+NR loss gradient direction ("don't be disease" to top2-k tiles) directly conflicts with Top-1 CE direction ("be this disease"), progressively suppressing positive sample responses. Deprecated in favor of weak CE for Tier 2 Top-2~K.
 
 ---
 
