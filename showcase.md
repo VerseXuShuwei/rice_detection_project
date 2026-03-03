@@ -264,9 +264,8 @@ NMS + Top-K → Final Detection Boxes with class labels and confidence
 
 ### 8.1 Qualitative Results
 
-[这里插入2-3个example images showing:]
+[example images showing:]
 - Original image
-- Ground truth annotation (if you have)
 - Predicted heatmap
 - Final detection boxes
 
