@@ -163,8 +163,18 @@ raw image (H×W)
        ├─ cross-class IoU NMS (>0.3 merge)
        ├─ BG-region filter（bg_prob mean >0.7 delete）
        └─ ranking by area×confidence → top_k
+
 ```
+
+Features:
+- **Adaptive tile selection**: Large images use [768, 1024, 1536], small images use [384, 512, 768]
+- **Scale-weighted fusion**: Large tiles get higher weight to prevent small-tile signal domination
+- **Tile-edge feathering**: Raised cosine windows eliminate grid artifacts at tile boundaries
+- **BG-aware reweighting**: Tiles with bg_prob ≥ 0.5 contribute zero to the disease heatmap
+```
+
 > Now considerating replace its function usingAdaptive Perception - Prototype of the decision loop（Preliminary plan :Depth Anything V2 + GRU decision module）
+
 ```
 Freeze components (The model trained by this project's strategy):
 ├─ Disease classification model (ONNX)
@@ -174,16 +184,9 @@ Learnable components:
      input: class confidence + heatmap entropy + depth features + action history
      output: {zoom_in, zoom_out, shift, stop}
 ```
+
 Progress: Writing a rule-based version - validating concepts
 
-
-```
-
-Features:
-- **Adaptive tile selection**: Large images use [768, 1024, 1536], small images use [384, 512, 768]
-- **Scale-weighted fusion**: Large tiles get higher weight to prevent small-tile signal domination
-- **Tile-edge feathering**: Raised cosine windows eliminate grid artifacts at tile boundaries
-- **BG-aware reweighting**: Tiles with bg_prob ≥ 0.5 contribute zero to the disease heatmap
 
 ---
 
