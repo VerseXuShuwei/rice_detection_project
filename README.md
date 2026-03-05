@@ -137,22 +137,46 @@ Standard batch-mean KL causes **heatmap diffusion** — mixing cross-class distr
 
 ---
 
-## Inference Pipeline
+## Inference Pipeline()
 
 ```
-Original Image (e.g., 3000×4000)
-    ↓
-Multi-scale Sliding Window (768/1024/1536px, adaptive)
-    ↓
-Per-tile Inference → 10-channel spatial heatmap per tile
-    ↓
-Scale-Weighted Heatmap Fusion + Tile-Edge Feathering
-    ↓
-BG-Aware Confidence Reweighting (suppress ambiguous tiles)
-    ↓
-Per-Class CCA → Greedy NMS → Class Refinement
-    ↓
-Final Detection Boxes with class labels and confidence
+raw image (H×W)
+  │
+  ├─ _select_tile_sizes() → [768, 1024, 1536]（large image）or [384, 512, 768]（small image）
+  │
+  ├─ tile_size:
+  │    ├─ stride = tile_size × 0.5
+  │    ├─ Sliding window cut tile（including edge handling）
+  │    ├─ each tile → resize到384×384 → 模型推理
+  │    │    ├─ get_spatial_heatmap() → (N, 10, 24, 24) → softmax → resize回tile区域
+  │    │    └─ predict_instances() → (N, 10) → 记录tiles_info
+  │    │
+  │    └─ Weighted cumulative heatmap_accum:
+  │         ├─ scale_weight = ts / max_ts（large scale tile have high weight）
+  │         ├─ bg_aware_weight = max(0, 1 - 2×bg_prob)（degrade high bg tile disease channel）
+  │         └─ feather_window（Hann window eliminates splicing marks）
+  │
+  ├─ TopK spatial normalization （each disease channel divide by its top-3 average） 
+  │
+  └─ extract_detections():
+       ├─ each diseases percentile threshold → binary → Morphology → CCA → bbox
+       ├─ cross-class IoU NMS (>0.3 merge)
+       ├─ BG-region filter（bg_prob mean >0.7 delete）
+       └─ ranking by area×confidence → top_k
+
+> Now considerating replace its function usingAdaptive Perception - Prototype of the decision loop（Preliminary plan :Depth Anything V2 + GRU decision module）
+
+Freeze components (The model trained by this project's strategy):
+├─ Disease classification model (ONNX)
+└─ Depth Anything V2 Small (pre-trained)
+Learnable components:
+└─ Decision Module (lightweight GRU/MLP)
+     input: class confidence + heatmap entropy + depth features + action history
+     output: {zoom_in, zoom_out, shift, stop}
+
+Progress: Writing a rule-based version - validating concepts
+
+
 ```
 
 Features:
