@@ -171,7 +171,10 @@ Features:
 - **Scale-weighted fusion**: Large tiles get higher weight to prevent small-tile signal domination
 - **Tile-edge feathering**: Raised cosine windows eliminate grid artifacts at tile boundaries
 - **BG-aware reweighting**: Tiles with bg_prob ≥ 0.5 contribute zero to the disease heatmap
-```
+
+---
+
+## Changes being made:
 
 > Now considerating replace its function usingAdaptive Perception - Prototype of the decision loop（Preliminary plan :Depth Anything V2 + GRU decision module）
 
