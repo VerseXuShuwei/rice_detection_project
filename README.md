@@ -174,7 +174,7 @@ Features:
 
 ---
 
-## Changes being made:
+## Changes being made on Inference Pipeline:
 
 > Now considerating replace its function usingAdaptive Perception - Prototype of the decision loop（Preliminary plan :Depth Anything V2 + GRU decision module）
 
