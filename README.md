@@ -163,9 +163,9 @@ raw image (H×W)
        ├─ cross-class IoU NMS (>0.3 merge)
        ├─ BG-region filter（bg_prob mean >0.7 delete）
        └─ ranking by area×confidence → top_k
-
+```
 > Now considerating replace its function usingAdaptive Perception - Prototype of the decision loop（Preliminary plan :Depth Anything V2 + GRU decision module）
-
+```
 Freeze components (The model trained by this project's strategy):
 ├─ Disease classification model (ONNX)
 └─ Depth Anything V2 Small (pre-trained)
@@ -173,7 +173,7 @@ Learnable components:
 └─ Decision Module (lightweight GRU/MLP)
      input: class confidence + heatmap entropy + depth features + action history
      output: {zoom_in, zoom_out, shift, stop}
-
+```
 Progress: Writing a rule-based version - validating concepts
 
 
