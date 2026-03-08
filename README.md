@@ -2,12 +2,6 @@
 
 > **From image-level labels to pixel-level localization** — detecting and localizing 9 rice diseases without any bounding box or pixel annotations.
 
-<!--
-<p align="center">
-  <img src="assets/demo_detection.png" width="800"/>
-</p>
--->
-
 ---
 
 ## Overview
@@ -26,7 +20,6 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 ## Results
 
 ![detection box](results/detection_box_example.png)
-
 
 > top-1 detection box scores 0.892; other top-2~5 boxes below 0.6
 
@@ -47,7 +40,7 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 > **Lightweight alternative**: EfficientNet-B0 (no hybrid) reaches 89.07% accuracy with ~4× fewer backbone parameters and faster training, making it the preferred choice for deployment and future iteration.
 
 <p align="center">
-<img src="results/confusion_matrix_filtered.png" alt="confusion matrics" width="60%"/>
+<img src="results/confusion_matrix_filtered.png" alt="confusion matrix" width="60%"/>
 </p>
 
 ---
@@ -76,7 +69,7 @@ The entire framework rests on a confirmed-clean negative sample pool (46,391 til
 
 ## Architecture
 
-The primary architecture is a **standard CNN backbone with global max pooling** — no additional neck or attention modules. Ablation results show the bare backbone outperforms the hybrid variant, confirming that the training strategy, not architectural complexity, drives performance.
+The primary architecture is a **standard CNN backbone with Conv1×1 spatial classifier + global max pooling** — no additional neck or attention modules. Ablation results show the bare backbone outperforms the hybrid variant, confirming that the training strategy, not architectural complexity, drives performance.
 
 ### Production Architecture (Bare Backbone)
 
@@ -136,18 +129,26 @@ HeatmapHead
 
 ## Training: Three-Tier Quality-Aware Loss
 
+### Equal Contribution Principle
+
+Sampling is unified across both phases (8 bags × K=3): 8 neg, 8 top-1, 16 top-2~K tiles per batch. Loss weights are calibrated so all three groups contribute equally (~8.0 total per batch):
+
+- `top1_ce_weight = 1.0` → 8 × 1.0 = 8.0
+- `top2k_nr_weight = 0.5` (warmup weak CE) → 16 × 0.5 = 8.0
+- `top2k_soft_weight = 1.0` (stable, transparent passthrough; internal `tier1_kl_weight=0.5` controls KL)
+
 ### Phase 1 — Warmup (Epochs 1–15)
-- Top-1: Strong CE (×5.0) as anchor signal
-- Top-2~K: Weak CE (×0.1)
-- Inter-bag ranking loss for margin-based separation
+- Top-1: CE (×1.0) with dynamic weight (warmup=1.0, no compression)
+- Top-2~K: Weak CE (×0.5, equal contribution baseline)
+- Inter-bag ranking loss for margin-based separation (margin=0.3)
 
 ### Phase 2 — Stable (Epochs 16–30)
 
 | Tier | Condition | Top-1 | Top-2~K |
 |------|-----------|-------|---------|
-| **Tier 1** (Qualified) | Correct & conf > 0.45 | Strong CE (×5.0) | Per-bag KL distillation |
-| **Tier 2** (Marginal) | Correct & conf ≤ 0.45 | Full CE (×1.0) | Weak CE |
-| **Tier 3** (Wrong) | Incorrect | Noise Drop / Correction | Silence |
+| **Tier 1** (Qualified) | Correct & conf > 0.45 | CE (×1.0, dynamic) | Per-bag KL (weight=0.5) |
+| **Tier 2** (Marginal) | Correct & conf ≤ 0.45 | CE (×1.0, full — direction trustworthy) | Weak CE (×0.25) |
+| **Tier 3** (Wrong) | Incorrect | Noise Drop (gap>0.5) / Correction Ranking | Silence |
 
 ### Per-Bag KL Distillation (Key Innovation)
 
@@ -173,7 +174,7 @@ Standard batch-mean KL causes **heatmap diffusion** — mixing cross-class distr
 
 ---
 
-## Inference Pipeline()
+## Inference Pipeline
 
 ```
 raw image (H×W)
@@ -210,54 +211,60 @@ Features:
 
 ---
 
-## Changes being made on Inference Pipeline:
+## Future Work: Adaptive Perception-Decision Loop
 
-> Now considerating replace its function usingAdaptive Perception - Prototype of the decision loop（Preliminary plan :Depth Anything V2 + GRU decision module）
+> Preliminary exploration, not part of the current ablation study.
 
-```
-Freeze components (The model trained by this project's strategy):
-├─ Disease classification model (ONNX)
-└─ Depth Anything V2 Small (pre-trained)
-Learnable components:
-└─ Decision Module (lightweight GRU/MLP)
-     input: class confidence + heatmap entropy + depth features + action history
-     output: {zoom_in, zoom_out, shift, stop}
-```
-
-Progress: Writing a rule-based version - validating concepts(20260306)
+Investigating replacing the fixed multi-scale sliding window inference with a learned decision loop: Depth Anything V2 provides scene structure, a lightweight GRU/MLP module decides {zoom_in, zoom_out, shift, stop} based on class confidence, heatmap entropy, depth features, and action history. Currently validating the concept with a rule-based prototype (2026-03-06).
 
 ---
 
 ## Ablation Study
 
-### Architecture Ablation (March 2026)
+### Design Rationale
 
-Systematic 2×2 ablation isolating **backbone** (EfficientNetV2-S vs B0) × **hybrid components** (FPN + ViT + HeatmapHead).
+The ablation study is structured in three dimensions:
+
+1. **Architecture ablation** (Backbone × Components): Which architectural components actually contribute? Done on both V2-S and B0.
+2. **Loss ablation** (Tiered loss vs Simple CE): Is the three-tier quality-aware loss necessary, or does plain CE suffice within the Scout-Snipe framework? Done on B0.
+3. **Pooling ablation** (GMP vs TopK-Mean): Does pooling mode matter for the hybrid architecture? Done on B0.
+
+Loss and pooling ablations are conducted on B0, justified by the architecture ablation showing consistent behavior between B0 and V2-S (< 1pp difference). This avoids redundant V2-S runs (~12h each vs ~3h for B0) without sacrificing validity.
+
+### Architecture Ablation
+
+2×2 factorial: **Backbone** (V2-S vs B0) × **Hybrid components** (FPN+ViT+HeatmapHead vs None), plus component isolation experiments (FPN only, no ViT).
 
 All configs share: Scout-Snipe asymmetric MIL, TopK-Anchored loss with three-tier quality gating, negative tile pool, scale diversity, 30 epochs, seed 42.
 
+**Pooling note**: Bare backbone uses GMP (the only option without HeatmapHead). Hybrid uses topk_mean via HeatmapHead. Both are consistent between training and evaluation — no train-eval pooling mismatch. The pooling ablation (P1/P2) below isolates this variable.
+
 #### Overall Metrics
 
-| Experiment | Backbone | Components | Overall Acc | Disease Macro-F1 | Neg Recall | TopK Lift |
-|:---|:---|:---|:---:|:---:|:---:|:---:|
-| **A3** | V2-S | None | **0.9003** | **0.8434** | **0.9909** | 0.5100 |
-| A2 | B0 | FPN+ViT+Head | 0.8942 | 0.8243 | 0.9789 | **0.6036** |
-| A4 | B0 | None | 0.8907 | 0.8199 | 0.9848 | 0.5503 |
-| Baseline | V2-S | FPN+ViT+Head | 0.8746 | 0.8015 | 0.9863 | 0.5776 |
+| Experiment | Backbone | Components | Pool Mode | Overall Acc | Disease Macro-F1 | Neg Recall | TopK Lift | Status |
+|:---|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **A3** | V2-S | None | GMP | **0.9003** | **0.8434** | **0.9909** | 0.5100 | ✅ Done |
+| A2 | B0 | FPN+ViT+Head | topk_mean | 0.8942 | 0.8243 | 0.9789 | **0.6036** | ✅ Done |
+| A4 | B0 | None | GMP | 0.8907 | 0.8199 | 0.9848 | 0.5503 | ✅ Done |
+| Baseline | V2-S | FPN+ViT+Head | topk_mean | 0.8746 | 0.8015 | 0.9863 | 0.5776 | ✅ Done |
+| **B** | V2-S | FPN only | topk_mean | 0.9020 | 0.8305 | 0.9793 | 0.5811 | ✅ Done |
+| **F** | B0 | FPN only | topk_mean | 0.9017 | 0.8332 | 0.9761 | 0.6101 | ✅ Done |
+
+> B and F isolate the contribution of ViT by comparing FPN-only vs full hybrid (FPN+ViT+Head) on the same backbone.
 
 #### Per-Class F1 Comparison (Filtered, C1–C8)
 
-| Class | Baseline (V2S+Comp) | A2 (B0+Comp) | A3 (V2S bare) | A4 (B0 bare) | Best |
-|:---|:---:|:---:|:---:|:---:|:---:|
-| 1 Bact-Leaf-Blight | 0.5606 | **0.7368** | 0.6690 | 0.6208 | A2 |
-| 2 Brown-Spot | 0.8662 | 0.8850 | **0.9129** | 0.9039 | A3 |
-| 3 False-Smut | 0.7131 | **0.7528** | 0.7412 | 0.7262 | A2 |
-| 4 Leaf-Blast | 0.9111 | 0.9023 | 0.9244 | **0.9353** | A4 |
-| 5 Neck-Blast | 0.8437 | 0.8700 | **0.8888** | 0.8709 | A3 |
-| 6 Leaf-Beetle | 0.9356 | 0.9205 | **0.9626** | 0.9334 | A3 |
-| 7 Leaf-Folder | 0.7942 | 0.7415 | **0.8622** | 0.7808 | A3 |
-| 8 Sheath-Blight | 0.7872 | 0.7854 | 0.7863 | **0.7877** | A4 |
-| **Macro (C1–C8)** | 0.8015 | 0.8243 | **0.8434** | 0.8199 | **A3** |
+| Class              | Baseline (V2S+Comp) | A2 (B0+Comp) | A3 (V2S bare) | A4 (B0 bare) | B (V2S+FPN) | F (B0+FPN) |  Best  |
+|:-------------------|:-------------------:|:------------:|:-------------:|:------------:|:-----------:|:----------:|:------:|
+| 1 Bact-Leaf-Blight |       0.5606        |    0.7368    |    0.6690     |    0.6208    | **0.8061**  |   0.7461   |   B    |
+| 2 Brown-Spot       |       0.8662        |    0.8850    |  **0.9129**   |    0.9039    |   0.9089    |   0.8835   |   A3   |
+| 3 False-Smut       |       0.7131        |  **0.7528**  |    0.7412     |    0.7262    |   0.7734    |   0.7561   |   B    |
+| 4 Leaf-Blast       |       0.9111        |    0.9023    |    0.9244     |  **0.9353**  |   0.9282    |   0.8978   |   A4   |
+| 5 Neck-Blast       |       0.8437        |    0.8700    |  **0.8888**   |    0.8709    |   0.8903    |   0.8798   |   B    |
+| 6 Leaf-Beetle      |       0.9356        |    0.9205    |  **0.9626**   |    0.9334    |   0.8953    |   0.9211   |   A3   |
+| 7 Leaf-Folder      |       0.7942        |    0.7415    |  **0.8622**   |    0.7808    |   0.5860    |   0.7612   |   A3   |
+| 8 Sheath-Blight    |       0.7872        |    0.7854    |    0.7863     |  **0.7877**  |   0.8556    |   0.8201   |   B    |
+| **Macro (C1–C8)**  |       0.8015        |    0.8243    |  **0.8434**   |    0.8199    |   0.8305    |   0.8332   | **A3** |
 
 #### Additional Evaluation Metrics
 
@@ -267,29 +274,61 @@ All configs share: Scout-Snipe asymmetric MIL, TopK-Anchored loss with three-tie
 | A2 (B0+Comp) | 0.9968 | 0.9902 | 0.0240 | 17,963 / 48,454 |
 | A4 (B0 bare) | 1.0000 | 0.9906 | 0.0175 | 20,968 / 48,454 |
 | Baseline (V2S+Comp) | 0.9947 | 0.9888 | 0.0150 | 19,890 / 48,454 |
+| B (V2S+FPN) | 0.9989 | 0.9901 | 0.0226 | 19,185 / 48,454 |
+| F (B0+FPN) | 0.9947 | 0.9879 | 0.0266 | 17,543 / 48,454 |
+
 
 #### Key Findings
 
-1. **Training strategy dominates architecture.** The bare V2-S backbone (A3) outperforms the full hybrid stack (Baseline) by **+2.6pp accuracy** and **+4.2pp Macro-F1**. The Scout-Snipe framework with tiered loss is the primary driver of performance — not architectural complexity.
+1. **Training strategy dominates architecture.** The bare V2-S backbone (A3) outperforms the full hybrid stack (Baseline) by +2.6pp accuracy and +4.2pp Macro-F1. The Scout-Snipe framework with tiered loss is the primary driver of performance — not architectural complexity.
 
 2. **Hybrid components hurt V2-S, marginally help B0.** Adding FPN+ViT+HeatmapHead degrades V2-S performance across the board, while giving B0 a small boost (+0.35pp acc, +0.44pp F1). The larger backbone already extracts sufficient multi-scale features; the hybrid modules introduce optimization overhead without proportional representational gain at 384×384 resolution.
 
-3. **B0 is a viable lightweight alternative.** At ~4× fewer backbone parameters, B0 (bare) reaches 89.07% accuracy — only 0.96pp behind V2-S (bare). With components, B0 narrows the gap further to 0.61pp. B0 also trains faster and uses less VRAM, making it attractive for deployment and rapid iteration.
+3. **B0 is a viable lightweight alternative.** At ~4× fewer backbone parameters, B0 (bare) reaches 89.07% accuracy — only 0.96pp behind V2-S (bare). B0 trains ~4× faster, making it the preferred backbone for subsequent ablations and deployment.
 
-4. **Per-class patterns reveal backbone-specific strengths.** A2 (B0+components) wins on diagnostically challenging classes (Bact-Leaf-Blight, False-Smut), suggesting the FPN attention mechanism helps B0 focus on subtle lesion patterns that its smaller feature space would otherwise miss. A3 (V2-S bare) dominates on texture-rich classes (Beetle, Folder, Neck-Blast).
+4. **Per-class patterns reveal backbone-specific strengths.** A2 (B0+components) wins on diagnostically challenging classes (Bact-Leaf-Blight, False-Smut), suggesting FPN helps B0 focus on subtle lesion patterns. A3 (V2-S bare) dominates on texture-rich classes (Beetle, Folder, Neck-Blast).
+
+### Loss Ablation — Weight Correction Phase (Pending)
+
+After correcting two structural bugs in the loss weighting, a clean re-run is needed before drawing conclusions about tier stratification value:
+
+**Bugs fixed (2026-03-09)**:
+1. **Tier2 top-1 missing `dynamic_weight`**: At stable start (dw=0.5), Tier2 top-1 was stronger than Tier1 (1.0 vs 0.5). Both now use `dynamic_weight ×`.
+2. **Double application of `top2k_soft_weight`**: Effective weight was `0.3 × 0.1 = 0.03` (extremely small). Fixed: outer set to `1.0` (transparent passthrough), inner weights control actual values.
+3. **Weight redesign** (equal contribution principle): `top1_ce_weight 5.0→1.0`, `top2k_nr_weight 0.03→0.5`, `top2k_soft_weight 0.3→1.0`.
+
+Both experiments: **B0 + FPN only** (no ViT — ablation F showed ViT is a pure negative on both backbones). V2-S deferred (too slow, ~12h/run; hybrid components hurt V2-S across the board).
+
+| Experiment | Config | Loss Mode | Status |
+|:---|:---|:---|:---:|
+| **3-W** | `train_ablation_3w.yaml` | Tiered (T1/T2/T3 + per-bag KL, corrected weights) | ⏳ Pending |
+| **3-W-simple** | `train_ablation_3w_simple.yaml` | Simple CE (uniform weak CE on all Top-K, no tier/KL) | ⏳ Pending |
+
+> **Expected finding**: If 3-W >> 3-W-simple: tiered quality gating has real contribution under correct weights. If 3-W ≈ 3-W-simple: Scout-Snipe selection itself is the primary driver, not tier stratification.
+
+---
+
+### Pooling Ablation (B0 Backbone)
+
+Isolates the effect of HeatmapHead pool_mode on B0+FPN+ViT+Head. Pooling is consistent between training Snipe and evaluation in both experiments.
+
+| Experiment | Backbone | Components | Pool Mode (train=eval) | Overall Acc | Disease Macro-F1 | Status |
+|:---|:---|:---|:---:|:---:|:---:|:---:|
+| **P1** | B0 | FPN+ViT+Head | GMP | — | — | ⏳ Queued |
+| **P2** | B0 | FPN+ViT+Head | topk_mean (k=3) | — | — | ⏳ Queued |
 
 ### Training Strategy Ablation (Historical)
 
-Earlier ablation on training strategy components (all using EfficientNetV2-S + FPN + ViT + HeatmapHead):
+Earlier iterations on training strategy refinements (all using V2-S + FPN + ViT + HeatmapHead). Each config changed one or two strategy parameters from the previous iteration.
 
-| Config | Neg Recall | Hit Acc | Overall Acc (filtered) | Neg Hallucination |
-|--------|:---:|:---:|:---:|:---:|
-| 0209 (Baseline) | 94.7% | 98.1% | 71.2% | 6.9% |
-| 0224 | 94.1% | 98.3% | 67.9% | 7.5% |
-| 0225 | 90.9% | 99.1% | 66.0% | 10.7% |
-| **0226** | **96.8%** | **98.7%** | **81.3%** | **3.6%** |
+| Config | Key Change | Overall Acc (filtered) | Neg Recall | Neg Hallucination |
+|--------|:---|:---:|:---:|:---:|
+| 0209 (Initial) | Baseline | 71.2% | 94.7% | 6.9% |
+| 0224 | Adjusted tier weights | 67.9% | 94.1% | 7.5% |
+| 0225 | Modified warmup schedule | 66.0% | 90.9% | 10.7% |
+| **0226** | conf_threshold=0.45, Tier 2 weight=1.0, warmup=15ep | **81.3%** | **96.8%** | **3.6%** |
 
-The combination of conf_threshold=0.45 + Tier 2 full weight + warmup 15 epochs produced a 10+ point jump in overall accuracy, demonstrating synergistic effects of training strategy refinements.
+The 0226 configuration produced a 10+ point jump in accuracy, demonstrating the synergistic effect of confidence gating, tier weight calibration, and warmup duration.
 
 ---
 
@@ -299,7 +338,7 @@ These failed experiments informed our final design:
 
 1. **Feature Critic with ImageNet features** — Pretrained features see healthy and diseased tiles as nearly identical (cosine sim gap: −0.0009). ImageNet provides no meaningful prior for rice pathology.
 
-2. **Spatial NMS** — Limited effectiveness With tile overlap. Replaced with Scale Diversity.
+2. **Spatial NMS** — Limited effectiveness with tile overlap. Replaced with Scale Diversity.
 
 3. **Negative Rejection loss** — Gradient direction ("don't be disease" to top2~k) conflicts with Top-1 CE ("be this disease"), causing progressive suppression of positive responses.
 
