@@ -42,6 +42,9 @@ Traditional rice disease detection requires expensive pixel-level or bounding-bo
 | Sheath Blight | 0.876 | 0.749 | 0.809 |
 | False Smut | 0.805 | 0.784 | 0.794 |
 | Bact. Leaf Blight | 0.612 | 0.830 | 0.704 |
+---
+
+![visualization](results/detection_box_example.png)
 
 ---
 
