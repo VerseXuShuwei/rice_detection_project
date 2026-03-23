@@ -1,47 +1,47 @@
 # Weakly-Supervised Rice Disease Detection via Asymmetric Multiple Instance Learning
 
-> **From image-level labels to pixel-level localization** — detecting and localizing 9 rice diseases without any bounding box or pixel annotations.
+> **From image-level labels to pixel-level localization** — detecting and localizing 8 rice diseases without any bounding box or pixel annotations.
 
 ---
 
 ## Overview
 
-Traditional rice disease detection requires expensive pixel-level or bounding-box annotations from domain experts. This project decreased that requirement:
+Traditional rice disease detection requires expensive pixel-level or bounding-box annotations from domain experts. This project removes that requirement:
 
 - **Input**: Image-level labels only ("this image contains Brown Spot")
 - **Output**: Spatial heatmaps + detection boxes showing *where* the disease is
-- **9 disease classes** + background (10-class classification)
+- **8 disease classes** + 1 background = **9-class output**
 - **Hardware**: Trained entirely on RTX 4060 Laptop (8GB VRAM)
-
-## Architecture
-
-![Model Architecture](docs/architecture.png)
 
 ## Results
 
-![detection box](results/detection_box_example.png)
-
-> top-1 detection box scores 0.892; other top-2~5 boxes below 0.6
-
-![Heatmap Visualization](results/perclass_heatmap_example.png)
-
-### Key Results (Best: A3 — EfficientNetV2-S, no hybrid components)
+### Best Config: A3-corrected (EfficientNetV2-S bare, corrected loss weights, λ₁=2.0)
 
 | Metric | Value |
 |--------|-------|
-| Overall Accuracy (filtered) | **90.03%** |
-| Disease Macro-F1 (C1–C8) | **0.8434** |
-| Background Recognition (Neg Recall) | **99.09%** |
-| Avg Top-1 Confidence | **99.42%** |
+| Overall Accuracy (filtered) | **91.25%** |
+| Disease Macro-F1 (C1–C8) | **0.8569** |
+| Background Recall (Neg Recall) | **99.15%** |
+| Avg Top-1 Confidence | **99.24%** |
 | Hit Accuracy (bag-level) | **99.89%** |
-| Negative Hallucination | **1.03%** |
-| Tiles Retained | **47.2%** (22,888 / 48,454) |
+| Negative Hallucination | **0.94%** |
+| Tiles Retained | **46.7%** (22,625 / 48,454) |
 
-> **Lightweight alternative**: EfficientNet-B0 (no hybrid) reaches 89.07% accuracy with ~4× fewer backbone parameters and faster training, making it the preferred choice for deployment and future iteration.
+> **Lightweight alternative**: EfficientNet-B0 (bare) reaches 89.07% accuracy with ~4× fewer backbone parameters and faster training — preferred for deployment and rapid iteration.
 
-<p align="center">
-<img src="results/confusion_matrix_filtered.png" alt="confusion matrix" width="60%"/>
-</p>
+### Per-Class Performance (A3-corrected — V2-S bare, λ₁=2.0)
+
+| Class | Precision | Recall | F1 |
+|:------|:---------:|:------:|:--:|
+| Background | 1.000 | 0.992 | 0.996 |
+| Leaf Blast | 0.934 | 0.963 | 0.949 |
+| Rice Leaf Beetle | 0.965 | 0.917 | 0.940 |
+| Brown Spot | 0.889 | 0.940 | 0.914 |
+| Node Neck Blast | 0.916 | 0.907 | 0.912 |
+| Rice Leaf Folder | 0.782 | 0.889 | 0.831 |
+| Sheath Blight | 0.876 | 0.749 | 0.809 |
+| False Smut | 0.805 | 0.784 | 0.794 |
+| Bact. Leaf Blight | 0.612 | 0.830 | 0.704 |
 
 ---
 
@@ -80,21 +80,21 @@ EfficientNet Backbone (V2-S or B0)
     Stages 0-2: FROZEN (ImageNet features)
     Stages 3+:  TRAINABLE (disease-specific)
     ↓
-Conv1×1 (spatial classifier → 10-channel heatmap)
+Conv1×1 (spatial classifier → 9-channel heatmap)
     ↓
-Global Max Pooling → 10-class logits
+Global Max Pooling → 9-class logits
 ```
 
 The Conv1×1 acts as a minimal spatial classifier: applied before pooling, it produces per-location class scores (i.e., a spatial heatmap), and GMP selects the strongest response as the tile-level prediction. This enables pixel-level disease localization without any dedicated heatmap module.
 
 | Backbone | Params | Overall Acc | Disease Macro-F1 |
 |:---|:---:|:---:|:---:|
-| EfficientNetV2-S | 22.15M | **90.03%** | **0.8434** |
+| EfficientNetV2-S (A3-corrected) | 22.15M | **91.25%** | **0.8569** |
 | EfficientNet-B0 | 5.29M | 89.07% | 0.8199 |
 
 ### Experimental: CNN-ViT Hybrid with FPN
 
-An experimental hybrid variant adds FPN neck, ViT residual block, and HeatmapHead after the backbone. While architecturally interesting, ablation shows it **underperforms** the bare backbone on V2-S (87.46% vs 90.03%) and provides only marginal gains on B0 (89.42% vs 89.07%). The additional training complexity (3-way LR, backbone freezing schedule, hybrid warmup) introduces optimization overhead that offsets representational benefits at 384×384 tile resolution.
+An experimental hybrid variant adds FPN neck, ViT residual block, and HeatmapHead after the backbone. While architecturally interesting, ablation shows it **underperforms** the bare backbone on V2-S (87.46% vs 91.25%) and provides only marginal gains on B0 (89.42% vs 89.07%). The additional training complexity (3-way LR, backbone freezing schedule, hybrid warmup) introduces optimization overhead that offsets representational benefits at 384×384 tile resolution.
 
 <details>
 <summary>Hybrid architecture details (click to expand)</summary>
@@ -115,13 +115,13 @@ ViT Residual Block (Global Attention)
     0.94M params (41× reduction vs full-dim placement)
     ↓
 HeatmapHead
-    Conv1×1 → 10 channels (spatial disease response)
+    Conv1×1 → 9 channels (spatial disease response)
     TopK-Mean Pooling → class logits
 ```
 
 **Total**: 24.18M parameters (Backbone 22.15M, FPN 1.09M, ViT 0.94M)
 
-**Design decision**: ViT placed *after* FPN dimension reduction (256ch), not before (1792ch), achieving 41× parameter reduction.
+**Design decision**: ViT placed *after* FPN dimension reduction (256ch), not before (1792ch), achieving 41× parameter reduction. Placing ViT at 1792d would require 38.6M params and OOM on 8GB GPU.
 
 </details>
 
@@ -159,6 +159,10 @@ Standard batch-mean KL causes **heatmap diffusion** — mixing cross-class distr
 - Both pass → KL using *this bag's own* Top-1 soft distribution
 - Either fails → Fallback to weak CE
 
+### Top-1 Anchor Leverage (λ₁ ≥ 2.0)
+
+Ablation reveals that the tier gating mechanism collapses when top-1 anchor weight equals other tiles (λ₁=1.0), causing 64% C2→C4 confusion. Raising to λ₁=2.0 restores tier gates to designed behavior. This **leverage principle** and the equal-contribution principle are both necessary simultaneously.
+
 ---
 
 ## Anti-Collapse Mechanisms
@@ -176,46 +180,48 @@ Standard batch-mean KL causes **heatmap diffusion** — mixing cross-class distr
 
 ## Inference Pipeline
 
-```
-raw image (H×W)
-  │
-  ├─ _select_tile_sizes() → [768, 1024, 1536]（large image）or [384, 512, 768]（small image）
-  │
-  ├─ tile_size:
-  │    ├─ stride = tile_size × 0.5
-  │    ├─ Sliding window cut tile（including edge handling）
-  │    ├─ each tile → resize到384×384 → inference
-  │    │    ├─ get_spatial_heatmap() → (N, 10, 24, 24) → softmax → resize to tile region
-  │    │    └─ predict_instances() → (N, 10) → tiles_info
-  │    │
-  │    └─ Weighted cumulative heatmap_accum:
-  │         ├─ scale_weight = ts / max_ts（large scale tile have high weight）
-  │         ├─ bg_aware_weight = max(0, 1 - 2×bg_prob)（degrade high bg tile disease channel）
-  │         └─ feather_window（Hann window eliminates splicing marks）
-  │
-  ├─ TopK spatial normalization （each disease channel divide by its top-3 average） 
-  │
-  └─ extract_detections():
-       ├─ each diseases percentile threshold → binary → Morphology → CCA → bbox
-       ├─ cross-class IoU NMS (>0.3 merge)
-       ├─ BG-region filter（bg_prob mean >0.7 delete）
-       └─ ranking by area×confidence → top_k
+Multi-scale sliding-window inference produces spatial disease heatmaps from full-resolution images.
 
 ```
+Original Image (3000×4000)
+    ↓
+Multi-Scale Tiling
+    Tile sizes: [768, 1024, 1536] px
+    Stride: 50% overlap
+    ↓
+Batch Inference (batch_size=8)
+    model.get_spatial_heatmap() → (B, 9, 24, 24)
+    ↓
+Scale-Weighted Heatmap Accumulation
+    BG-aware downweighting (2×)
+    Feather window (15% taper)
+    TopK spatial normalization (k=3)
+    ↓
+Full-Resolution Probability Map (9, H, W)
+    ↓
+Post-Processing
+    Gaussian blur + percentile threshold
+    Connected Component Analysis (CCA)
+    Greedy NMS (IoU > 0.3)
+    Per-region class refinement
+    BG-region filtering (mean_heatmap[0] > 0.5)
+    ↓
+Detection Results
+    coords, class_id, confidence, area
+```
 
-Features:
-- **Adaptive tile selection**: Large images use [768, 1024, 1536], small images use [384, 512, 768]
-- **Scale-weighted fusion**: Large tiles get higher weight to prevent small-tile signal domination
-- **Tile-edge feathering**: Raised cosine windows eliminate grid artifacts at tile boundaries
-- **BG-aware reweighting**: Tiles with bg_prob ≥ 0.5 contribute zero to the disease heatmap
+### GUI Diagnostic Tool (6 Tabs)
 
----
+| Tab | Name | Content |
+|-----|------|---------|
+| 1 | Detection | CCA boxes + NMS + tile gallery |
+| 2 | Entropy | Per-scale disease entropy map |
+| 3 | Per-Class | Heatmap + p90/max stats by class |
+| 4 | Components | Backbone/FPN/ViT PCA + attention |
+| 5 | Scale Debug | Per-scale top-K tile boxes |
+| 6 | Ent-Filter | CCA + entropy gate (confidence × entropy dual threshold) |
 
-## Future Work: Adaptive Perception-Decision Loop
-
-> Preliminary exploration, not part of the current ablation study.
-
-Investigating replacing the fixed multi-scale sliding window inference with a learned decision loop: Depth Anything V2 provides scene structure, a lightweight GRU/MLP module decides {zoom_in, zoom_out, shift, stop} based on class confidence, heatmap entropy, depth features, and action history. Currently validating the concept with a rule-based prototype (2026-03-06).
+All inference parameters are YAML-configurable via `configs/inference/default.yaml`.
 
 ---
 
@@ -223,112 +229,55 @@ Investigating replacing the fixed multi-scale sliding window inference with a le
 
 ### Design Rationale
 
-The ablation study is structured in three dimensions:
+The ablation study is structured along three orthogonal dimensions:
 
-1. **Architecture ablation** (Backbone × Components): Which architectural components actually contribute? Done on both V2-S and B0.
-2. **Loss ablation** (Tiered loss vs Simple CE): Is the three-tier quality-aware loss necessary, or does plain CE suffice within the Scout-Snipe framework? Done on B0.
-3. **Pooling ablation** (GMP vs TopK-Mean): Does pooling mode matter for the hybrid architecture? Done on B0.
+1. **Architecture** (Backbone × Components): Which components contribute? 2×2 factorial + component isolation.
+2. **Loss** (Tiered vs Simple CE): Is three-tier quality-aware loss necessary?
+3. **Pooling** (GMP vs TopK-Mean): Does pooling mode matter for hybrid architecture?
 
-Loss and pooling ablations are conducted on B0, justified by the architecture ablation showing consistent behavior between B0 and V2-S (< 1pp difference). This avoids redundant V2-S runs (~12h each vs ~3h for B0) without sacrificing validity.
+Loss and pooling ablations are conducted on B0, justified by architecture ablation showing < 1pp difference between backbones in matched configurations.
 
 ### Architecture Ablation
 
-2×2 factorial: **Backbone** (V2-S vs B0) × **Hybrid components** (FPN+ViT+HeatmapHead vs None), plus component isolation experiments (FPN only, no ViT).
+| Experiment | Backbone | Components | Pool Mode | Overall Acc | Macro-F1 | Neg Recall | Status |
+|:-----------|:---------|:-----------|:---------:|:-----------:|:--------:|:----------:|:------:|
+| **Arch-1** | V2-S | None | backbone GMP† | 0.9003 | 0.8434 | 0.9909 | ✅ |
+| Arch-2 | B0 | None | backbone GMP† | 0.8907 | 0.8199 | 0.9848 | ✅ |
+| Arch-3 | V2-S | FPN+ViT+Head | topk_mean | 0.8746 | 0.8015 | 0.9863 | ✅ |
+| Arch-4 | B0 | FPN+ViT+Head | topk_mean | 0.8942 | 0.8243 | 0.9789 | ✅ |
+| **Arch-5** | V2-S | FPN only | topk_mean | 0.9020 | 0.8305 | 0.9793 | ✅ |
+| **Arch-6** | B0 | FPN only | topk_mean | 0.9017 | 0.8332 | 0.9761 | ✅ |
 
-All configs share: Scout-Snipe asymmetric MIL, TopK-Anchored loss with three-tier quality gating, negative tile pool, scale diversity, 30 epochs, seed 42.
-
-**Pooling note**: Bare backbone uses GMP (the only option without HeatmapHead). Hybrid uses topk_mean via HeatmapHead. Both are consistent between training and evaluation — no train-eval pooling mismatch. The pooling ablation (P1/P2) below isolates this variable.
-
-#### Overall Metrics
-
-| Experiment | Backbone | Components | Pool Mode | Overall Acc | Disease Macro-F1 | Neg Recall | TopK Lift | Status |
-|:---|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **A3** | V2-S | None | GMP | **0.9003** | **0.8434** | **0.9909** | 0.5100 | ✅ Done |
-| A2 | B0 | FPN+ViT+Head | topk_mean | 0.8942 | 0.8243 | 0.9789 | **0.6036** | ✅ Done |
-| A4 | B0 | None | GMP | 0.8907 | 0.8199 | 0.9848 | 0.5503 | ✅ Done |
-| Baseline | V2-S | FPN+ViT+Head | topk_mean | 0.8746 | 0.8015 | 0.9863 | 0.5776 | ✅ Done |
-| **B** | V2-S | FPN only | topk_mean | 0.9020 | 0.8305 | 0.9793 | 0.5811 | ✅ Done |
-| **F** | B0 | FPN only | topk_mean | 0.9017 | 0.8332 | 0.9761 | 0.6101 | ✅ Done |
-
-> B and F isolate the contribution of ViT by comparing FPN-only vs full hybrid (FPN+ViT+Head) on the same backbone.
-
-#### Per-Class F1 Comparison (Filtered, C1–C8)
-
-| Class              | Baseline (V2S+Comp) | A2 (B0+Comp) | A3 (V2S bare) | A4 (B0 bare) | B (V2S+FPN) | F (B0+FPN) |  Best  |
-|:-------------------|:-------------------:|:------------:|:-------------:|:------------:|:-----------:|:----------:|:------:|
-| 1 Bact-Leaf-Blight |       0.5606        |    0.7368    |    0.6690     |    0.6208    | **0.8061**  |   0.7461   |   B    |
-| 2 Brown-Spot       |       0.8662        |    0.8850    |  **0.9129**   |    0.9039    |   0.9089    |   0.8835   |   A3   |
-| 3 False-Smut       |       0.7131        |  **0.7528**  |    0.7412     |    0.7262    |   0.7734    |   0.7561   |   B    |
-| 4 Leaf-Blast       |       0.9111        |    0.9023    |    0.9244     |  **0.9353**  |   0.9282    |   0.8978   |   A4   |
-| 5 Neck-Blast       |       0.8437        |    0.8700    |  **0.8888**   |    0.8709    |   0.8903    |   0.8798   |   B    |
-| 6 Leaf-Beetle      |       0.9356        |    0.9205    |  **0.9626**   |    0.9334    |   0.8953    |   0.9211   |   A3   |
-| 7 Leaf-Folder      |       0.7942        |    0.7415    |  **0.8622**   |    0.7808    |   0.5860    |   0.7612   |   A3   |
-| 8 Sheath-Blight    |       0.7872        |    0.7854    |    0.7863     |  **0.7877**  |   0.8556    |   0.8201   |   B    |
-| **Macro (C1–C8)**  |       0.8015        |    0.8243    |  **0.8434**   |    0.8199    |   0.8305    |   0.8332   | **A3** |
-
-#### Additional Evaluation Metrics
-
-| Experiment | Hit Acc | Top1 Conf | Neg Hallucination | Filtered Tiles |
-|:---|:---:|:---:|:---:|:---:|
-| A3 (V2S bare) | 0.9989 | 0.9942 | 0.0103 | 22,888 / 48,454 |
-| A2 (B0+Comp) | 0.9968 | 0.9902 | 0.0240 | 17,963 / 48,454 |
-| A4 (B0 bare) | 1.0000 | 0.9906 | 0.0175 | 20,968 / 48,454 |
-| Baseline (V2S+Comp) | 0.9947 | 0.9888 | 0.0150 | 19,890 / 48,454 |
-| B (V2S+FPN) | 0.9989 | 0.9901 | 0.0226 | 19,185 / 48,454 |
-| F (B0+FPN) | 0.9947 | 0.9879 | 0.0266 | 17,543 / 48,454 |
-
+> † "backbone GMP" = `heatmap_head.enable: false`. Model uses internal Conv1×1 + backbone-native GMP. NOT `pool_mode: gmp`.
 
 #### Key Findings
 
-1. **Training strategy dominates architecture.** The bare V2-S backbone (A3) outperforms the full hybrid stack (Baseline) by +2.6pp accuracy and +4.2pp Macro-F1. The Scout-Snipe framework with tiered loss is the primary driver of performance — not architectural complexity.
+1. **Training strategy dominates.** Bare V2-S (Arch-1, 90.03%) outperforms full hybrid (Arch-3, 87.46%) by +2.57pp.
+2. **FPN helps, more so on B0.** V2-S +0.17pp, B0 +1.10pp — smaller backbone benefits more from multi-scale fusion.
+3. **ViT hurts both backbones.** V2-S −2.74pp, B0 −0.75pp — global attention at 384×384 introduces optimization overhead without proportional gain.
+4. **Cross-backbone consistency.** V2-S vs B0 differ by < 1pp in matched configs, validating B0-only ablation for loss/pooling.
 
-2. **Hybrid components hurt V2-S, marginally help B0.** Adding FPN+ViT+HeatmapHead degrades V2-S performance across the board, while giving B0 a small boost (+0.35pp acc, +0.44pp F1). The larger backbone already extracts sufficient multi-scale features; the hybrid modules introduce optimization overhead without proportional representational gain at 384×384 resolution.
+### Loss Ablation
 
-3. **B0 is a viable lightweight alternative.** At ~4× fewer backbone parameters, B0 (bare) reaches 89.07% accuracy — only 0.96pp behind V2-S (bare). B0 trains ~4× faster, making it the preferred backbone for subsequent ablations and deployment.
+| Experiment | Config | Loss Mode | Overall Acc | Macro-F1 | Hit Acc | Status |
+|:-----------|:-------|:----------|:-----------:|:--------:|:-------:|:------:|
+| Loss-1 | B0+FPN | Tiered (λ₁=1.0) | 0.8322 | 0.7466 | 0.9254 | ✅ |
+| Loss-2 | B0+FPN | Simple CE | 0.8834 | 0.8128 | 0.9958 | ✅ |
+| Loss-3 | B0+FPN | Tiered (λ₁=2.0, dw 0.7→1.0) | 0.8858 | 0.8130 | 0.9936 | ✅ |
+| **Loss-4** | V2-S bare | Tiered (λ₁=2.0, corrected) | **0.9125** | **0.8569** | **0.9989** | ✅ |
 
-4. **Per-class patterns reveal backbone-specific strengths.** A2 (B0+components) wins on diagnostically challenging classes (Bact-Leaf-Blight, False-Smut), suggesting FPN helps B0 focus on subtle lesion patterns. A3 (V2-S bare) dominates on texture-rich classes (Beetle, Folder, Neck-Blast).
+**Critical finding**: λ₁=1.0 causes catastrophic class collapse (C2→C4 confusion at 64%). λ₁=2.0 restores tier gates. Simple CE is a surprisingly strong baseline — tier stratification's value comes primarily from the top-1 leverage mechanism, not the gating itself.
 
-### Loss Ablation — Weight Correction Phase (Pending)
+### Pooling Ablation (B0 + FPN+ViT+Head)
 
-After correcting two structural bugs in the loss weighting, a clean re-run is needed before drawing conclusions about tier stratification value:
+| Experiment | Pool Mode | Overall Acc | Macro-F1 | Neg Halluc. |
+|:-----------|:----------|:-----------:|:--------:|:-----------:|
+| Pool-1 | GMP | 0.8555 | 0.7610 | 3.51% |
+| Pool-2 | TopK-Mean (k=3) | 0.8942 | 0.8243 | 2.40% |
 
-**Bugs fixed (2026-03-09)**:
-1. **Tier2 top-1 missing `dynamic_weight`**: At stable start (dw=0.5), Tier2 top-1 was stronger than Tier1 (1.0 vs 0.5). Both now use `dynamic_weight ×`.
-2. **Double application of `top2k_soft_weight`**: Effective weight was `0.3 × 0.1 = 0.03` (extremely small). Fixed: outer set to `1.0` (transparent passthrough), inner weights control actual values.
-3. **Weight redesign** (equal contribution principle): `top1_ce_weight 5.0→1.0`, `top2k_nr_weight 0.03→0.5`, `top2k_soft_weight 0.3→1.0`.
+TopK-Mean outperforms GMP by +3.87pp. GMP's winner-take-all gradient destabilizes training in the hybrid architecture; TopK-Mean distributes gradients across top-3 spatial locations for smoother optimization.
 
-Both experiments: **B0 + FPN only** (no ViT — ablation F showed ViT is a pure negative on both backbones). V2-S deferred (too slow, ~12h/run; hybrid components hurt V2-S across the board).
-
-| Experiment | Config | Loss Mode | Status |
-|:---|:---|:---|:---:|
-| **3-W** | `train_ablation_3w.yaml` | Tiered (T1/T2/T3 + per-bag KL, corrected weights) | ⏳ Pending |
-| **3-W-simple** | `train_ablation_3w_simple.yaml` | Simple CE (uniform weak CE on all Top-K, no tier/KL) | ⏳ Pending |
-
-> **Expected finding**: If 3-W >> 3-W-simple: tiered quality gating has real contribution under correct weights. If 3-W ≈ 3-W-simple: Scout-Snipe selection itself is the primary driver, not tier stratification.
-
----
-
-### Pooling Ablation (B0 Backbone)
-
-Isolates the effect of HeatmapHead pool_mode on B0+FPN+ViT+Head. Pooling is consistent between training Snipe and evaluation in both experiments.
-
-| Experiment | Backbone | Components | Pool Mode (train=eval) | Overall Acc | Disease Macro-F1 | Status |
-|:---|:---|:---|:---:|:---:|:---:|:---:|
-| **P1** | B0 | FPN+ViT+Head | GMP | — | — | ⏳ Queued |
-| **P2** | B0 | FPN+ViT+Head | topk_mean (k=3) | — | — | ⏳ Queued |
-
-### Training Strategy Ablation (Historical)
-
-Earlier iterations on training strategy refinements (all using V2-S + FPN + ViT + HeatmapHead). Each config changed one or two strategy parameters from the previous iteration.
-
-| Config | Key Change | Overall Acc (filtered) | Neg Recall | Neg Hallucination |
-|--------|:---|:---:|:---:|:---:|
-| 0209 (Initial) | Baseline | 71.2% | 94.7% | 6.9% |
-| 0224 | Adjusted tier weights | 67.9% | 94.1% | 7.5% |
-| 0225 | Modified warmup schedule | 66.0% | 90.9% | 10.7% |
-| **0226** | conf_threshold=0.45, Tier 2 weight=1.0, warmup=15ep | **81.3%** | **96.8%** | **3.6%** |
-
-The 0226 configuration produced a 10+ point jump in accuracy, demonstrating the synergistic effect of confidence gating, tier weight calibration, and warmup duration.
+> **Note**: This result is specific to the hybrid architecture's HeatmapHead. Bare backbone experiments use backbone-native GMP and achieve top performance (90%+), confirming GMP itself is not inherently inferior — the hybrid's additional learnable layers benefit from softer gradients.
 
 ---
 
@@ -340,23 +289,21 @@ These failed experiments informed our final design:
 
 2. **Spatial NMS** — Limited effectiveness with tile overlap. Replaced with Scale Diversity.
 
-3. **Negative Rejection loss** — Gradient direction ("don't be disease" to top2~k) conflicts with Top-1 CE ("be this disease"), causing progressive suppression of positive responses.
+3. **Negative Rejection loss** — Gradient direction ("don't be disease" applied to top-2~K) conflicts with Top-1 CE ("be this disease"), causing progressive suppression of positive responses (Silence Spiral).
 
 ---
 
-## Per-Class Performance (Best Config: A3 — V2-S, No Components)
+## Future Work: Adaptive Perception-Decision Loop
 
-| Class | Precision | Recall | F1 |
-|:------|:---------:|:------:|:--:|
-| Background | 1.000 | 0.991 | 0.995 |
-| Rice Leaf Beetle | 0.977 | 0.948 | 0.963 |
-| Leaf Blast | 0.909 | 0.941 | 0.924 |
-| Brown Spot | 0.902 | 0.924 | 0.913 |
-| Node Neck Blast | 0.905 | 0.873 | 0.889 |
-| Rice Leaf Folder | 0.803 | 0.931 | 0.862 |
-| Sheath Blight | 0.869 | 0.718 | 0.786 |
-| False Smut | 0.802 | 0.689 | 0.741 |
-| Bact. Leaf Blight | 0.590 | 0.772 | 0.669 |
+> Preliminary exploration, not part of the current ablation study.
+
+Investigating replacing the fixed multi-scale sliding window with a learned decision loop: a lightweight policy network decides {zoom_in, shift, stop} based on confidence, heatmap entropy, and deep features. Three progressive designs under evaluation:
+
+1. **MVP**: MLP + manual state buffer (scalar observations only)
+2. **GRU**: RNN + 4×4 spatial pooling (time-series memory)
+3. **CNN Feature Injection** (recommended): FPN features + heatmap → lightweight CNN policy with continuous coordinate regression
+
+Target: 30% tile coverage for 90%+ detection consistency vs full-coverage baseline.
 
 ---
 
@@ -366,7 +313,8 @@ These failed experiments informed our final design:
 |----------|-------|
 | Positive bags (images) | 2,819 |
 | Negative bags (images) | 1,127 |
-| Disease classes | 9 |
+| Disease classes | 8 |
+| Total output classes | 9 (8 disease + 1 background) |
 | Positive tiles (multi-scale) | 158,277 (100K train / 58K val) |
 | Negative tiles (multi-scale) | 46,391 (37K train / 9K val) |
 | Tile scales | 768 / 1024 / 1536 px |
@@ -378,25 +326,26 @@ These failed experiments informed our final design:
 
 ```
 rice_detection/
-├── configs/                  # YAML configuration files
+├── configs/                  # YAML configuration (all hyperparameters)
 │   ├── algorithm/            # MIL strategy, loss, feature critic
-│   ├── dataset/              # Data paths, augmentation, pools
+│   ├── dataset/              # Class definitions, data paths, augmentation
 │   ├── model/                # Architecture, hybrid components
+│   ├── inference/            # Inference engine parameters
 │   └── trainer/              # Optimizer, scheduler, evaluation
 ├── scripts/
 │   ├── train.py              # Training entry point
-│   └── tools/                # Data preprocessing utilities
+│   └── tools/                # Data preprocessing (build pools, prototypes)
 ├── src/
-│   ├── core/                 # Config, registry, base classes
-│   ├── data/                 # Dataset, tile pools, augmentation
-│   ├── models/               # EfficientNetV2 + FPN + ViT + heads
-│   ├── losses/               # TopK-Anchored MIL loss (tiered)
-│   ├── trainer/              # Asymmetric MIL trainer loop
-│   ├── inference/            # Unified engine + GUI + detection
-│   ├── evaluation/           # Metrics, validation
-│   ├── critics/              # Feature Critic (experimental)
-│   └── utils/                # Logging, visualization
-└── deploy/                   # Deployment utilities (WIP)
+│   ├── core/                 # Abstract interfaces, checkpoint manager
+│   ├── data/                 # Dataset, tile pools (LMDB), sampler, augmentation
+│   ├── models/               # EfficientNetV2-S / B0 / ResNet50 + FPN + ViT + heads
+│   ├── losses/               # TopK-Anchored MIL loss (tiered, three-tier quality gating)
+│   ├── trainer/              # Asymmetric MIL trainer (Builder + State + Engine)
+│   ├── inference/            # Unified inference engine + GUI diagnostic tool
+│   ├── evaluation/           # Warmup evaluator (P0), final evaluator, heatmap visualizer
+│   ├── critics/              # Feature Critic (experimental, ineffective on this dataset)
+│   └── utils/                # Config I/O, logging, scheduling, visualization
+└── deploy/                   # ONNX export, inference SDK (WIP)
 ```
 
 ---
@@ -408,9 +357,31 @@ rice_detection/
 | GPU | NVIDIA RTX 4060 Laptop (8GB VRAM) |
 | Framework | PyTorch + timm + Albumentations |
 | Backbone | EfficientNetV2-RW-S / EfficientNet-B0 (ImageNet pretrained) |
-| Training VRAM | ~2.4 GB (with AMP) |
+| Training VRAM | ~2.4 GB (8 tiles, with AMP) |
 | Inference VRAM | ~1.0 GB (32 tiles batch) |
-| Data storage | LMDB (tile pools with precomputed features) |
+| Data storage | LMDB (tile pools with precomputed 1792-dim features) |
+
+---
+
+## Quick Start
+
+```bash
+# 1. Build negative tile pool (required before first training)
+python scripts/tools/build_negative_pool.py --config configs/algorithm/train_topk_asymmetric.yaml
+
+# 2. Build positive tile pool (offline multi-scale tiling)
+python scripts/tools/build_positive_pool.py --config configs/algorithm/train_topk_asymmetric.yaml
+
+# 3. Train
+python scripts/train.py --config configs/algorithm/train_topk_asymmetric.yaml
+
+# 4. Resume from checkpoint
+python scripts/train.py --config configs/algorithm/train_topk_asymmetric.yaml \
+    --resume outputs/checkpoints/exp_name/epoch_015.pth
+
+# 5. Run tests
+python -m pytest tests/ -v
+```
 
 ---
 
